@@ -1,0 +1,17 @@
+# Core pipeline
+faster-whisper          # local speech-to-text (CTranslate2 Whisper)
+sounddevice             # microphone capture (PortAudio)
+numpy                   # audio buffers
+requests                # Ollama / OpenAI-compatible HTTP
+pynput                  # global hotkeys + synthetic keystrokes
+
+# macOS integration (PyObjC). pynput pulls Quartz/Cocoa in transitively,
+# but they are declared here so a fresh install is reproducible.
+pyobjc-core
+pyobjc-framework-Cocoa                # AppKit, Foundation: overlay + settings UI
+pyobjc-framework-Quartz               # CGEvent: hotkey suppression
+pyobjc-framework-ApplicationServices  # Accessibility permission check
+pyobjc-framework-AVFoundation         # microphone permission request
+
+# Optional: only needed when llm.backend = "anthropic"
+anthropic
