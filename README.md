@@ -6,12 +6,34 @@ Local push-to-talk dictation for macOS — speak anywhere, get clean text.
 hold a hotkey → mic capture → HuaJiaoDJ VoiceFlow → LLM cleanup → paste into any app
 ```
 
-Speech never leaves your machine: transcription runs locally with
-`faster-whisper`. The cleanup pass — removing "um", adding punctuation,
-handling "actually, make that Thursday" — runs on a local model through Ollama
-by default, or on a cloud API if you'd rather.
-
 **macOS only.** See [Platform support](#platform-support) below.
+
+---
+
+## About
+
+HuaJiaoDJ VoiceFlow turns your voice into finished text anywhere on your Mac —
+in an email, a chat box, a code editor, a terminal. Hold a hotkey and talk;
+release it and clean, punctuated text appears at your cursor. There is no
+window to switch to and nothing to copy and paste.
+
+It is built to be **private by default**. Speech recognition runs entirely on
+your own machine, so your audio is never uploaded and the app works with the
+network off. An optional second pass tidies the result — stripping "um" and
+false starts, fixing punctuation and capitalization, and following spoken
+corrections like *"actually, make that Thursday."* That pass runs on a local
+model through Ollama out of the box; you can point it at a cloud API instead if
+you prefer, and the app always shows which backend is active.
+
+Beyond plain dictation it can run **hands-free**, listening continuously and
+transcribing each sentence as you finish it; **rewrite text you've selected**
+from a spoken instruction ("make this more concise"); expand **snippets** from
+trigger phrases; learn **your vocabulary** so names and jargon come out right;
+and adapt its tone to the app you're typing in.
+
+Why build it: good dictation existed, but the good options sent your voice to
+someone else's servers. This one keeps it on your Mac and gives you the dials —
+hotkeys, model, sensitivity, and how much cleanup you want.
 
 ---
 
