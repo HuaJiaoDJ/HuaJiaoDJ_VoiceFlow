@@ -262,3 +262,9 @@ keystrokes it synthesizes itself so they can't corrupt held-key tracking.
 - [ ] Dictation history and undo-last-paste
 - [ ] Streaming transcription, so long dictations paste instantly
 - [ ] whisper.cpp + Core ML backend for Neural Engine acceleration
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
