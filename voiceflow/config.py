@@ -103,7 +103,7 @@ DEFAULT_CONFIG = {
 
 DEFAULT_DICTIONARY = {
     "vocabulary": [
-        "Wispr Flow", "Ollama", "LM Studio", "faster-whisper", "Whisper",
+        "HuaJiaoDJ VoiceFlow", "Ollama", "LM Studio", "faster-whisper", "Whisper",
         "VAD", "Tauri", "SQLite", "qwen3",
     ],
     "replacements": {

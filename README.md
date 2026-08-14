@@ -1,9 +1,9 @@
 # HuaJiaoDJ_VoiceFlow
 
-Local push-to-talk dictation for macOS — a self-hosted take on Wispr Flow.
+Local push-to-talk dictation for macOS — speak anywhere, get clean text.
 
 ```
-hold a hotkey → mic capture → Whisper (local) → LLM cleanup → paste into any app
+hold a hotkey → mic capture → HuaJiaoDJ VoiceFlow → LLM cleanup → paste into any app
 ```
 
 Speech never leaves your machine: transcription runs locally with
