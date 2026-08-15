@@ -5,6 +5,7 @@ focus, or the synthetic Cmd+V would paste into the overlay's app instead of
 whatever the user was typing in. Cocoa requires all of this on the main thread,
 so the public functions marshal onto it via performSelectorOnMainThread.
 """
+import json
 import math
 import time
 
@@ -181,7 +182,12 @@ class OverlayController(NSObject):
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setLevel_(NSStatusWindowLevel)
-        self.panel.setIgnoresMouseEvents_(True)   # click-through
+        # Draggable by default: grab it anywhere to move it. `locked` in the
+        # config restores pure click-through for anyone who never wants it to
+        # intercept a click. Non-activating, so dragging never steals focus.
+        self.panel.setIgnoresMouseEvents_(False)
+        self.panel.setMovable_(True)
+        self.panel.setMovableByWindowBackground_(True)
         self.panel.setHasShadow_(True)
         self.panel.setAlphaValue_(0.0)
         self.panel.setCollectionBehavior_(
@@ -192,6 +198,9 @@ class OverlayController(NSObject):
         self.view = WaveView.alloc().initWithFrame_(rect)
         self.view.recorder = recorder
         self.panel.setContentView_(self.view)
+        self.saved_position = None
+        self._placing = False   # True while we move the panel ourselves
+        self.panel.setDelegate_(self)   # for windowDidMove:
         # Register in *common* modes. A plain scheduled timer only runs in the
         # default mode, so it stops firing while a menu is open or the user is
         # scrolling/dragging — the panel would be ordered front but stuck at
@@ -202,14 +211,33 @@ class OverlayController(NSObject):
         NSRunLoop.currentRunLoop().addTimer_forMode_(self.timer, NSRunLoopCommonModes)
         return self
 
+    def _clamp_onscreen(self, x, y):
+        """Keep the pill reachable if a display was unplugged or rearranged."""
+        for s in NSScreen.screens():
+            f = s.frame()
+            if (f.origin.x - PANEL_W < x < f.origin.x + f.size.width
+                    and f.origin.y - PANEL_H < y < f.origin.y + f.size.height):
+                return x, y
+        return None  # saved spot is off every display; fall back to auto
+
     def _reposition(self):
-        """Place the HUD on the display the user is actually looking at.
+        """Place the HUD where the user dragged it, else auto-place it.
 
         NSScreen.mainScreen() is the screen with the *key window* — but this is
         an accessory app that never takes key, so it always resolved to the
         primary display and the HUD landed on the wrong monitor. The screen
         under the pointer is a far better proxy for where the user is working.
         """
+        # A position the user chose wins over anything automatic.
+        if self.saved_position is not None:
+            spot = self._clamp_onscreen(*self.saved_position)
+            if spot is not None:
+                self._placing = True
+                self.panel.setFrame_display_(
+                    NSMakeRect(spot[0], spot[1], PANEL_W, PANEL_H), False)
+                self._placing = False
+                return
+
         screen = None
         try:
             point = NSEvent.mouseLocation()
@@ -228,7 +256,9 @@ class OverlayController(NSObject):
         vf = screen.visibleFrame()
         x = vf.origin.x + (vf.size.width - PANEL_W) / 2.0
         y = vf.origin.y + self.y_offset
+        self._placing = True
         self.panel.setFrame_display_(NSMakeRect(x, y, PANEL_W, PANEL_H), False)
+        self._placing = False
 
     def _appear(self):
         """Make the panel visible immediately, without waiting for a tick."""
@@ -250,6 +280,44 @@ class OverlayController(NSObject):
         self.view.state = "processing"
         self._appear()
 
+    def windowDidMove_(self, _note):
+        """Remember where the user dropped it, so it reappears there.
+
+        This also fires when *we* move the panel, so programmatic placement is
+        flagged — otherwise 'reset position' would immediately re-save the
+        auto-placed spot and never actually reset.
+        """
+        if self._placing:
+            return
+        frame = self.panel.frame()
+        self.saved_position = (float(frame.origin.x), float(frame.origin.y))
+        self._save_position()
+
+    @objc.python_method
+    def _save_position(self):
+        try:
+            from . import config as cfg
+            conf = cfg.load_config()
+            x, y = self.saved_position
+            conf.setdefault("overlay", {})["position"] = {"x": x, "y": y}
+            with open(cfg.CONFIG_PATH, "w") as f:
+                json.dump(conf, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass  # a HUD that can't save its spot must not break dictation
+
+    def resetPosition_(self, _sender=None):
+        """Back to automatic bottom-centre placement."""
+        self.saved_position = None
+        try:
+            from . import config as cfg
+            conf = cfg.load_config()
+            conf.setdefault("overlay", {})["position"] = None
+            with open(cfg.CONFIG_PATH, "w") as f:
+                json.dump(conf, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+        self._reposition()
+
     def showIdle_(self, _):
         """Dim, always-visible pill: auto transcribe is armed and listening."""
         self.view.state = "listening"
@@ -268,7 +336,7 @@ class OverlayController(NSObject):
 _controller = None
 
 
-def start(recorder, y_offset=120.0):
+def start(recorder, y_offset=120.0, position=None, locked=False):
     """Create the panel. Must be called on the main thread before run_forever."""
     global _controller
     app = NSApplication.sharedApplication()
@@ -276,7 +344,18 @@ def start(recorder, y_offset=120.0):
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     _controller = OverlayController.alloc().initWithRecorder_(recorder)
     _controller.y_offset = y_offset
+    if isinstance(position, dict) and "x" in position and "y" in position:
+        _controller.saved_position = (float(position["x"]), float(position["y"]))
+    if locked:
+        _controller.panel.setIgnoresMouseEvents_(True)
+        _controller.panel.setMovableByWindowBackground_(False)
     return _controller
+
+
+def reset_position():
+    if _controller is not None:
+        _controller.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "resetPosition:", None, False)
 
 
 def run_forever():

@@ -96,7 +96,13 @@ DEFAULT_CONFIG = {
     "overlay": {
         # Floating waveform HUD shown while dictating.
         "enabled": True,
-        "y_offset": 120,  # points above the bottom of the screen
+        "y_offset": 120,  # points above the bottom of the screen (auto mode)
+        # Drag the pill to move it; the spot is remembered here as
+        # {"x": ..., "y": ...} in screen points. null = auto-place at the
+        # bottom-centre of whichever display the mouse is on.
+        "position": None,
+        # true = click-through (can't be dragged, never blocks a click).
+        "locked": False,
     },
     "sounds": True,
 }

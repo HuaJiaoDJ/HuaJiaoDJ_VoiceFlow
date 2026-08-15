@@ -737,7 +737,9 @@ class VoiceFlow:
         if ov.get("enabled", True):
             try:
                 from . import overlay, ui
-                overlay.start(self.recorder, y_offset=float(ov.get("y_offset", 120)))
+                overlay.start(self.recorder, y_offset=float(ov.get("y_offset", 120)),
+                              position=ov.get("position"),
+                              locked=bool(ov.get("locked", False)))
                 self._overlay = overlay
                 self.log("Waveform overlay ready.")
                 try:

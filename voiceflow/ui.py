@@ -509,7 +509,8 @@ class MenuBar(NSObject):
         self.auto_item.setTarget_(self)
         menu.addItem_(self.auto_item)
         menu.addItem_(NSMenuItem.separatorItem())
-        for title, action in (("Settings…", "openSettings:"), (None, None),
+        for title, action in (("Reset overlay position", "resetOverlay:"),
+                              ("Settings…", "openSettings:"), (None, None),
                               ("Quit HuaJiaoDJ_VoiceFlow", "quit:")):
             if title is None:
                 menu.addItem_(NSMenuItem.separatorItem())
@@ -543,6 +544,13 @@ class MenuBar(NSObject):
         if self.app is None:
             return
         self.app.set_auto(not self.app.auto_on)
+
+    def resetOverlay_(self, _sender):
+        try:
+            from . import overlay
+            overlay.reset_position()
+        except Exception:
+            pass
 
     def openSettings_(self, _sender):
         self.settings.show()
