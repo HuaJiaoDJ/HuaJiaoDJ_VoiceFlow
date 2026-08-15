@@ -452,7 +452,11 @@ class VoiceFlow:
                         self.mode = None
                         self.log("[auto] turned off mid-utterance — "
                                  "transcribing the last take")
-                        self.hud("show_processing")
+                        # Deliberately do NOT re-show the HUD here. Off has to
+                        # look off: re-showing it as "processing" made the pill
+                        # reappear a frame after the toggle hid it, so a single
+                        # press looked like it had done nothing. The take still
+                        # transcribes and pastes — just without the indicator.
                         threading.Thread(target=self._process,
                                          args=("dictate", audio),
                                          daemon=True).start()
