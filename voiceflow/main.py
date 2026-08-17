@@ -809,10 +809,10 @@ class VoiceFlow:
             t0 = time.time()
             transcript = self.transcriber.transcribe(audio)
             self.log(f"[stt {time.time() - t0:.1f}s] {transcript!r}")
-            # Replace the preview with the accurate transcript rather than
-            # blanking it. The preview model is fast but fallible, so the last
-            # thing on screen should be the text that actually gets pasted.
-            self.hud_caption(transcript)
+            # Don't replay the transcript on the overlay: it has already been
+            # read phrase by phrase, and repeating the whole thing at the end
+            # is just noise. The text lands in the app instead.
+            self.hud_caption("")
             if not transcript:
                 self.sound(SOUND_ERROR)
                 return
@@ -823,7 +823,6 @@ class VoiceFlow:
             if final is None:
                 self.sound(SOUND_ERROR)
                 return
-            self.hud_caption(final)
             with self._inject_guard():
                 paste_text(
                     final,
@@ -833,7 +832,6 @@ class VoiceFlow:
                 )
             self.sound(SOUND_DONE)
             self.log(f"[pasted] {final!r}" + (" +enter" if do_enter else ""))
-            time.sleep(0.45)   # let the corrected caption be readable
         finally:
             self.hud("show_idle" if self.auto_on else "hide")
             self.busy.release()

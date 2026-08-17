@@ -62,8 +62,7 @@ MAX_ROWS = 1                # one phrase on screen at a time
 # Transition timings, from the caption spec.
 ENTER_SECS, LEAVE_SECS = 0.22, 0.30
 ENTER_DY, LEAVE_DY = 6.0, -4.0
-# A phrase still being recognised is dimmer than a confirmed one.
-LIVE_ALPHA, CONFIRMED_ALPHA = 0.62, 1.0
+LIVE_ALPHA = CONFIRMED_ALPHA = 1.0
 
 
 def metrics(scale=1.0, font_size=BASE_FONT):
@@ -250,14 +249,10 @@ class WaveView(NSView):
             0.05, 0.06, 0.11, PLATE_ALPHA * a).set()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             NSMakeRect(bx, by, plate_w, plate_h), CORNER, CORNER).fill()
-        # Confirmed text is near-white; text still being recognised is greyer
-        # and slightly transparent, so settled words read as settled.
-        if row.confirmed:
-            colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                0.98, 0.98, 1.0, a * CONFIRMED_ALPHA)
-        else:
-            colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                0.80, 0.82, 0.86, a * LIVE_ALPHA)
+        # One text colour throughout. A dimmer "still being recognised" state
+        # drew attention to the recogniser rather than to the words.
+        colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.98, 0.98, 1.0, a)
         row.ns.drawInRect_withAttributes_(
             NSMakeRect(bx + PAD_X, by + PAD_Y, tw, self.m["line_h"]),
             self._row_attrs(colour))
