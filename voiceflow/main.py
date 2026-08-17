@@ -476,18 +476,13 @@ class VoiceFlow:
     # ---------- live caption preview ----------
 
     def _preview_loop(self):
-        """Live captions: transcribe only the speech not yet committed.
+        """Live captions: a rolling line of the most recent speech.
 
-        Committing by *audio position* rather than by diffing text is the
-        whole trick. Whisper rewords earlier parts of a window between passes,
-        so text-diffing repeatedly failed to recognise words it had already
-        shown and re-displayed them — captions flashed and repeated, worst of
-        all when speaking quickly. Once a phrase is committed its audio is
-        never looked at again, so it cannot come back.
+        Each pass re-transcribes a short sliding window and shows the tail, so
+        the caption tracks what is being said *now*. Older words scroll off
+        rather than being replayed.
         """
-        committed = 0          # samples of this take already turned into phrases
-        last_phrase = ""
-        last_live = ""
+        last_shown = ""
         last_pass = 0.0
         seen_seq = -1
         while True:
@@ -496,43 +491,35 @@ class VoiceFlow:
                 time.sleep(0.5)
                 continue
             if self.mode is None:
-                committed, last_phrase, last_live = 0, "", ""
+                if last_shown:
+                    last_shown = ""
                 time.sleep(0.15)
                 continue
             # Steady cadence: wait the remainder of the interval, not a full
             # interval on top of however long the last pass took.
-            time.sleep(max(0.05, float(p.get("interval", 1.0)) - last_pass))
+            time.sleep(max(0.05, float(p.get("interval", 0.7)) - last_pass))
             if self.mode is None:
                 continue
             pass_started = time.time()
             try:
                 seq = self._take_seq
-                if seq != seen_seq:            # new take: start from its beginning
-                    seen_seq, committed = seq, 0
-                    last_phrase = last_live = ""
+                if seq != seen_seq:
+                    seen_seq, last_shown = seq, ""
+                    self._overlay.clear_captions()
                 audio = self.recorder.snapshot()
                 rate = self.conf["audio"]["sample_rate"]
-                if audio is None:
+                if audio is None or len(audio) < float(p.get("min_audio", 0.6)) * rate:
                     continue
-                # Feed the model a little already-committed audio as context.
-                # Handed a bare 1-2s fragment it mishears badly ("the biggest
-                # challenges not speaking best"); with a lead-in it recovers.
-                # The lead-in is transcribed but never displayed.
-                lead = int(float(p.get("lead_in", 2.0)) * rate)
-                start = max(0, committed - lead)
-                lead_secs = (committed - start) / float(rate)
-                audio = audio[start:]
-                if len(audio) - (committed - start) < float(p.get("min_audio", 0.6)) * rate:
-                    continue
-                # Bound the work: if someone talks for a long stretch without
-                # a natural break, commit the oldest part anyway.
-                cap = int(float(p.get("window_seconds", 10.0)) * rate)
-                if len(audio) > cap:
-                    drop = len(audio) - cap
-                    start += drop
-                    committed = max(committed, start)
-                    lead_secs = max(0.0, (committed - start) / float(rate))
-                    audio = audio[-cap:]
+                # Re-transcribe a sliding window of the most recent speech.
+                # Stitching committed phrases was tried and was worse: the
+                # model rewords across pass boundaries, so fragments duplicated
+                # ("keep up." then "up with me") and short pieces transcribed
+                # badly. A fresh window is coherent, and — because the whole
+                # window is redone each pass — earlier mistakes self-correct as
+                # more context arrives, instead of being frozen on screen.
+                window = int(float(p.get("window_seconds", 6.0)) * rate)
+                if len(audio) > window:
+                    audio = audio[-window:]
                 # Whisper invents phrases ("Thank you.") from near-silence.
                 import numpy as _np
                 if float(_np.abs(audio).max()) < 0.012:
@@ -541,33 +528,20 @@ class VoiceFlow:
                 if tr is None:
                     time.sleep(1.0)
                     continue
-                words = tr.transcribe_words(audio)
+                text = tr.transcribe(audio)
                 if seq != self._take_seq or self.mode is None:
                     continue
-                if not words:
+                if not text:
                     continue
-
-                # Drop the lead-in: those words are already on screen.
-                words = [(t, e) for t, e in words if e > lead_secs + 0.02]
-                if not words:
-                    continue
-                texts = [w for w, _ in words]
-                phrases, leftover = _segment(texts)
-                if phrases:
-                    # Advance past exactly the audio those phrases covered, so
-                    # the next pass starts after them.
-                    spoken = len(texts) - len(leftover)
-                    committed = start + int(words[spoken - 1][1] * rate)
-                    for phrase in phrases:
-                        if phrase != last_phrase:
-                            last_phrase = phrase
-                            self._overlay.confirm_phrase(phrase)
-                    last_live = ""
-                    self._overlay.set_live("")
-                live = " ".join(leftover)
-                if live != last_live:
-                    last_live = live
-                    self._overlay.set_live(live)
+                # Keep the newest words. Only one line is ever shown, so hand
+                # the overlay the tail rather than the whole window.
+                words = text.split()
+                while len(" ".join(words)) > 90 and len(words) > 3:
+                    words = words[1:]
+                text = " ".join(words)
+                if text != last_shown:
+                    last_shown = text
+                    self._overlay.set_live(text)
             except Exception as e:
                 self.log(f"[preview] {e}")
                 time.sleep(1.0)
