@@ -211,6 +211,8 @@ class VoiceFlow:
         self.auto_key = None
         self._menubar = None
         self._auto_held = False
+        self._preview_tr = None     # fast model for live captions
+        self._preview_loading = False
         self._dictate_held = False  # combo level, for edge detection
         self._command_held = False
 
@@ -223,6 +225,14 @@ class VoiceFlow:
 
     def log(self, msg):
         print(msg, flush=True)
+
+    def hud_caption(self, text):
+        if self._overlay is None:
+            return
+        try:
+            self._overlay.set_caption(text)
+        except Exception:
+            pass
 
     def hud(self, action):
         """Drive the waveform overlay; never let UI trouble break dictation."""
@@ -402,6 +412,75 @@ class VoiceFlow:
                         self.busy.release()
                     except RuntimeError:
                         pass
+
+    # ---------- live caption preview ----------
+
+    def _preview_loop(self):
+        """While a take is running, transcribe what's been said so far with a
+        small fast model and show it in the overlay.
+
+        This is deliberately a *second* model: the accurate one is busy-ish and
+        far too slow to re-run every second. Preview text is never pasted — the
+        final transcription always comes from the real model.
+        """
+        last_shown = ""
+        while True:
+            p = self.conf.get("preview", {})
+            if not p.get("enabled", True) or self._overlay is None:
+                time.sleep(0.5)
+                continue
+            if self.mode is None:
+                if last_shown:
+                    last_shown = ""
+                time.sleep(0.15)
+                continue
+            time.sleep(float(p.get("interval", 0.9)))
+            if self.mode is None:
+                continue
+            try:
+                audio = self.recorder.snapshot()
+                min_len = float(p.get("min_audio", 0.6)) * self.conf["audio"]["sample_rate"]
+                if audio is None or len(audio) < min_len:
+                    continue
+                tr = self._preview_transcriber()
+                if tr is None:
+                    time.sleep(1.0)
+                    continue
+                text = tr.transcribe(audio)
+                # A late result from a take that already ended must not linger.
+                if text and self.mode is not None and text != last_shown:
+                    last_shown = text
+                    self._overlay.set_caption(text)
+            except Exception as e:
+                self.log(f"[preview] {e}")
+                time.sleep(1.0)
+
+    def _preview_transcriber(self):
+        """Load the small preview model once, in the background."""
+        if self._preview_tr is not None:
+            return self._preview_tr
+        if self._preview_loading:
+            return None
+        self._preview_loading = True
+
+        def load():
+            try:
+                from .stt import Transcriber
+                name = self.conf.get("preview", {}).get("model", "tiny")
+                self.log(f"[preview] loading '{name}' model for live captions...")
+                self._preview_tr = Transcriber(
+                    model=name,
+                    compute_type=self.conf["stt"]["compute_type"],
+                    language=self.conf["stt"]["language"],
+                    beam_size=1,
+                    hotwords=self.dictionary["vocabulary"],
+                )
+                self.log("[preview] live captions ready")
+            except Exception as e:
+                self.log(f"[preview] could not load preview model: {e}")
+
+        threading.Thread(target=load, daemon=True).start()
+        return None
 
     # ---------- hands-free auto transcribe ----------
 
@@ -604,6 +683,7 @@ class VoiceFlow:
             t0 = time.time()
             transcript = self.transcriber.transcribe(audio)
             self.log(f"[stt {time.time() - t0:.1f}s] {transcript!r}")
+            self.hud_caption("")   # real transcript supersedes the preview
             if not transcript:
                 self.sound(SOUND_ERROR)
                 return
@@ -725,6 +805,9 @@ class VoiceFlow:
         if auto_hk:
             self.log(f"Press [{auto_hk}] to toggle hands-free auto transcribe.")
         threading.Thread(target=self._auto_loop, daemon=True).start()
+        if self.conf.get("preview", {}).get("enabled", True):
+            self.log("Live captions enabled.")
+            threading.Thread(target=self._preview_loop, daemon=True).start()
         if self.conf["auto"].get("start_on_launch"):
             self.set_auto(True)
         threading.Thread(target=self._event_loop, daemon=True).start()

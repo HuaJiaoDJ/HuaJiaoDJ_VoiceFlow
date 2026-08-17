@@ -48,6 +48,15 @@ class Recorder:
             if self._capturing:
                 self._chunks.append(chunk)
 
+    def snapshot(self):
+        """Audio captured so far in the current take, without ending it.
+        Used for live preview transcription while the user is still talking."""
+        with self._lock:
+            if not self._capturing or not self._chunks:
+                return None
+            audio = np.concatenate(self._chunks, axis=0)
+        return audio.flatten()
+
     def levels(self):
         """Recent loudness history, oldest first, each 0..1."""
         with self._lock:

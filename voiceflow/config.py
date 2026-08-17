@@ -93,6 +93,19 @@ DEFAULT_CONFIG = {
         # Hard cap on one utterance, so a noisy room can't record forever.
         "max_seconds": 90,
     },
+    "preview": {
+        # Live captions: show your words in the overlay while you're still
+        # speaking. A second, much faster Whisper model does the running
+        # transcription; the accurate model still produces the final text.
+        "enabled": True,
+        # "tiny" keeps up in real time. "base" is more accurate but heavier —
+        # it competes with the real transcription for CPU.
+        "model": "tiny",
+        # Seconds between preview passes. Lower feels snappier and costs more.
+        "interval": 0.9,
+        # Don't bother previewing until there's this much audio.
+        "min_audio": 0.6,
+    },
     "overlay": {
         # Floating waveform HUD shown while dictating.
         "enabled": True,

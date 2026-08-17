@@ -15,13 +15,18 @@ from AppKit import (
     NSEvent,
     NSBezierPath,
     NSColor,
+    NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSGraphicsContext,
+    NSMutableParagraphStyle,
     NSPanel,
+    NSParagraphStyleAttributeName,
     NSRectFillUsingOperation,
     NSScreen,
     NSView,
 )
-from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
+from Foundation import NSMakeRect, NSObject, NSRunLoop, NSString, NSTimer
 
 NSRunLoopCommonModes = "kCFRunLoopCommonModes"
 
@@ -32,12 +37,21 @@ NSWindowStyleMaskBorderless = 0
 NSWindowStyleMaskNonactivatingPanel = 1 << 7
 NSBackingStoreBuffered = 2
 NSStatusWindowLevel = 25
+# Status level (25) sits above ordinary windows but a fullscreen app can still
+# cover it. Screen-saver level keeps the HUD visible over fullscreen video,
+# presentations, and Mission Control.
+NSScreenSaverWindowLevel = 1000
 NSApplicationActivationPolicyAccessory = 1
 NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
 NSWindowCollectionBehaviorStationary = 1 << 4
 NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
 
-PANEL_W, PANEL_H = 156.0, 64.0  # compact ellipse
+# The panel is wider/taller than the visible pill so live captions have room
+# above it. Everything outside the drawn shapes is transparent, so with no
+# caption it looks exactly like the bare ellipse.
+PILL_W, PILL_H = 156.0, 64.0
+CAPTION_H = 62.0
+PANEL_W, PANEL_H = 520.0, PILL_H + CAPTION_H
 FPS = 30.0
 
 # Gradient stops sampled across the ribbon: cyan -> violet -> pink.
@@ -66,6 +80,7 @@ class WaveView(NSView):
         self.amp = 0.0          # smoothed 0..1
         self.alpha = 0.0        # current window opacity
         self.alpha_target = 0.0
+        self.caption = ""
         self.t0 = time.time()
         return self
 
@@ -100,19 +115,57 @@ class WaveView(NSView):
 
     # ---- drawing ----
 
+    @objc.python_method
+    def _draw_caption(self, w):
+        """Live transcription text, in a pill above the waveform."""
+        text = (self.caption or "").strip()
+        if not text or self.alpha_target <= 0.01:
+            return
+        font = NSFont.systemFontOfSize_(15)
+        colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.94, 0.95, 1.0, 0.95 * self.alpha_target)
+        style = NSMutableParagraphStyle.alloc().init()
+        style.setAlignment_(2)          # centred
+        style.setLineBreakMode_(0)      # wrap by word
+        attrs = {
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: colour,
+            NSParagraphStyleAttributeName: style,
+        }
+        pad_x, pad_y = 14.0, 8.0
+        max_w = w - 40.0
+        ns = NSString.stringWithString_(text)
+        size = ns.boundingRectWithSize_options_attributes_(
+            (max_w, CAPTION_H), 1 << 0 | 1 << 3, attrs).size  # wraps, uses glyphs
+        tw = min(max_w, max(60.0, size.width))
+        th = min(CAPTION_H - pad_y * 2, size.height)
+
+        # Background plate, bottom-aligned just above the pill.
+        bx = (w - (tw + pad_x * 2)) / 2.0
+        by = PILL_H + 6.0
+        plate = NSMakeRect(bx, by, tw + pad_x * 2, th + pad_y * 2)
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.05, 0.06, 0.11, 0.85 * self.alpha_target).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(plate, 12, 12).fill()
+        ns.drawInRect_withAttributes_(
+            NSMakeRect(bx + pad_x, by + pad_y, tw, th), attrs)
+
     def drawRect_(self, _rect):
         b = self.bounds()
-        w, h = b.size.width, b.size.height
-        cx, cy = w / 2.0, h / 2.0
+        w = b.size.width
+        cx = w / 2.0
 
         # Clear to transparent first (Copy, not the default blend) so the
-        # area outside the circle stays see-through.
+        # area outside the drawn shapes stays see-through.
         NSColor.clearColor().set()
         NSRectFillUsingOperation(b, NSCompositingOperationCopy)
 
+        self._draw_caption(w)
+
+        # The pill sits at the bottom; captions stack above it.
         inset = 3.0
-        # Semi-axes of the ellipse.
-        ax, by = (w - inset * 2.0) / 2.0, (h - inset * 2.0) / 2.0
+        cy = PILL_H / 2.0
+        ax, by = (PILL_W - inset * 2.0) / 2.0, (PILL_H - inset * 2.0) / 2.0
         disc_rect = NSMakeRect(cx - ax, cy - by, ax * 2.0, by * 2.0)
         disc = NSBezierPath.bezierPathWithOvalInRect_(disc_rect)
 
@@ -181,7 +234,7 @@ class OverlayController(NSObject):
         )
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(NSColor.clearColor())
-        self.panel.setLevel_(NSStatusWindowLevel)
+        self.panel.setLevel_(NSScreenSaverWindowLevel)
         # Draggable by default: grab it anywhere to move it. `locked` in the
         # config restores pure click-through for anyone who never wants it to
         # intercept a click. Non-activating, so dragging never steals focus.
@@ -211,14 +264,28 @@ class OverlayController(NSObject):
         NSRunLoop.currentRunLoop().addTimer_forMode_(self.timer, NSRunLoopCommonModes)
         return self
 
-    def _clamp_onscreen(self, x, y):
-        """Keep the pill reachable if a display was unplugged or rearranged."""
+    @objc.python_method
+    def _active_screen(self):
+        """The display the user is working on — the one under the pointer."""
+        try:
+            point = NSEvent.mouseLocation()
+            for candidate in NSScreen.screens():
+                f = candidate.frame()
+                if (f.origin.x <= point.x <= f.origin.x + f.size.width
+                        and f.origin.y <= point.y <= f.origin.y + f.size.height):
+                    return candidate
+        except Exception:
+            pass
+        return NSScreen.mainScreen()
+
+    @objc.python_method
+    def _screen_for_point(self, x, y):
         for s in NSScreen.screens():
             f = s.frame()
-            if (f.origin.x - PANEL_W < x < f.origin.x + f.size.width
-                    and f.origin.y - PANEL_H < y < f.origin.y + f.size.height):
-                return x, y
-        return None  # saved spot is off every display; fall back to auto
+            if (f.origin.x <= x + PANEL_W / 2 <= f.origin.x + f.size.width
+                    and f.origin.y <= y + PANEL_H / 2 <= f.origin.y + f.size.height):
+                return s
+        return None
 
     def _reposition(self):
         """Place the HUD where the user dragged it, else auto-place it.
@@ -228,34 +295,27 @@ class OverlayController(NSObject):
         primary display and the HUD landed on the wrong monitor. The screen
         under the pointer is a far better proxy for where the user is working.
         """
-        # A position the user chose wins over anything automatic.
-        if self.saved_position is not None:
-            spot = self._clamp_onscreen(*self.saved_position)
-            if spot is not None:
-                self._placing = True
-                self.panel.setFrame_display_(
-                    NSMakeRect(spot[0], spot[1], PANEL_W, PANEL_H), False)
-                self._placing = False
-                return
-
-        screen = None
-        try:
-            point = NSEvent.mouseLocation()
-            for candidate in NSScreen.screens():
-                f = candidate.frame()
-                if (f.origin.x <= point.x <= f.origin.x + f.size.width
-                        and f.origin.y <= point.y <= f.origin.y + f.size.height):
-                    screen = candidate
-                    break
-        except Exception:
-            screen = None
-        if screen is None:
-            screen = NSScreen.mainScreen()
+        screen = self._active_screen()
         if screen is None:
             return
         vf = screen.visibleFrame()
-        x = vf.origin.x + (vf.size.width - PANEL_W) / 2.0
-        y = vf.origin.y + self.y_offset
+
+        if self.saved_position is not None:
+            # The drag is stored as an offset *within* a screen, then applied to
+            # whichever display the user is on. Storing absolute coordinates
+            # pinned the HUD to one monitor, so it vanished whenever they moved
+            # to the other one.
+            dx, dy = self.saved_position
+            x = vf.origin.x + dx
+            y = vf.origin.y + dy
+        else:
+            x = vf.origin.x + (vf.size.width - PANEL_W) / 2.0
+            y = vf.origin.y + self.y_offset
+
+        # Always keep it fully on the visible area of that screen.
+        x = max(vf.origin.x, min(x, vf.origin.x + vf.size.width - PANEL_W))
+        y = max(vf.origin.y, min(y, vf.origin.y + vf.size.height - PANEL_H))
+
         self._placing = True
         self.panel.setFrame_display_(NSMakeRect(x, y, PANEL_W, PANEL_H), False)
         self._placing = False
@@ -273,8 +333,19 @@ class OverlayController(NSObject):
     def showListening_(self, _):
         self.view.state = "listening"
         self.view.amp = 0.0
-        self._reposition()
-        self._appear()
+        self.view.caption = ""      # fresh take, fresh caption
+        try:
+            self._reposition()
+            self._appear()
+            f = self.panel.frame()
+            print(f"[overlay] shown at x={f.origin.x:.0f} y={f.origin.y:.0f} "
+                  f"visible={self.panel.isVisible()} "
+                  f"alpha={self.panel.alphaValue():.2f} "
+                  f"level={self.panel.level()}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"[overlay] show FAILED: {e!r}\n{traceback.format_exc()}",
+                  flush=True)
 
     def showProcessing_(self, _):
         self.view.state = "processing"
@@ -290,7 +361,14 @@ class OverlayController(NSObject):
         if self._placing:
             return
         frame = self.panel.frame()
-        self.saved_position = (float(frame.origin.x), float(frame.origin.y))
+        screen = (self._screen_for_point(frame.origin.x, frame.origin.y)
+                  or self._active_screen())
+        if screen is None:
+            return
+        vf = screen.visibleFrame()
+        # Store where it sits *within* its screen, not absolute desktop coords.
+        self.saved_position = (float(frame.origin.x - vf.origin.x),
+                               float(frame.origin.y - vf.origin.y))
         self._save_position()
 
     @objc.python_method
@@ -299,7 +377,7 @@ class OverlayController(NSObject):
             from . import config as cfg
             conf = cfg.load_config()
             x, y = self.saved_position
-            conf.setdefault("overlay", {})["position"] = {"x": x, "y": y}
+            conf.setdefault("overlay", {})["position"] = {"dx": x, "dy": y}
             with open(cfg.CONFIG_PATH, "w") as f:
                 json.dump(conf, f, indent=2, ensure_ascii=False)
         except Exception:
@@ -317,6 +395,10 @@ class OverlayController(NSObject):
         except Exception:
             pass
         self._reposition()
+
+    def setCaption_(self, text):
+        self.view.caption = text or ""
+        self.view.setNeedsDisplay_(True)
 
     def showIdle_(self, _):
         """Dim, always-visible pill: auto transcribe is armed and listening."""
@@ -344,8 +426,17 @@ def start(recorder, y_offset=120.0, position=None, locked=False):
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     _controller = OverlayController.alloc().initWithRecorder_(recorder)
     _controller.y_offset = y_offset
-    if isinstance(position, dict) and "x" in position and "y" in position:
-        _controller.saved_position = (float(position["x"]), float(position["y"]))
+    if isinstance(position, dict):
+        if "dx" in position and "dy" in position:
+            _controller.saved_position = (float(position["dx"]), float(position["dy"]))
+        elif "x" in position and "y" in position:
+            # Legacy absolute coordinates: convert to an offset within the
+            # screen that contained them, so the HUD stops being pinned there.
+            ax, ay = float(position["x"]), float(position["y"])
+            scr = _controller._screen_for_point(ax, ay)
+            if scr is not None:
+                vf = scr.visibleFrame()
+                _controller.saved_position = (ax - vf.origin.x, ay - vf.origin.y)
     if locked:
         _controller.panel.setIgnoresMouseEvents_(True)
         _controller.panel.setMovableByWindowBackground_(False)
@@ -381,6 +472,14 @@ def show_processing():
 
 def show_idle():
     _post("showIdle:")
+
+
+def set_caption(text):
+    """Show live transcription text in the HUD (call from any thread)."""
+    if _controller is None:
+        return
+    _controller.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "setCaption:", text or "", False)
 
 
 def hide():
