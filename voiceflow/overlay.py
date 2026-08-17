@@ -57,7 +57,7 @@ PAD_X, PAD_Y = 14.0, 7.0
 ROW_GAP = 6.0
 CORNER = 12.0
 PLATE_ALPHA = 0.85
-MAX_ROWS = 2                # a long phrase wraps onto a second row
+MAX_ROWS = 1                # one line at a time; a full line pages over
 
 # Transition timings, from the caption spec.
 ENTER_SECS, LEAVE_SECS = 0.22, 0.30
@@ -130,11 +130,13 @@ def wrap_lines(text, budget):
 class CaptionRow:
     """One line of caption, with its own fade/slide animation."""
 
-    __slots__ = ("text", "confirmed", "alpha", "dy", "t", "state", "ns", "width")
+    __slots__ = ("text", "confirmed", "alpha", "dy", "t", "state", "ns",
+                 "width", "page")
 
-    def __init__(self, text, confirmed):
+    def __init__(self, text, confirmed, page=0):
         self.text = text
         self.confirmed = confirmed
+        self.page = page
         self.state = "enter"       # enter | hold | leave
         self.t = 0.0
         self.alpha = 0.0
@@ -559,9 +561,12 @@ class OverlayController(NSObject):
         self.view.setNeedsDisplay_(True)
 
     def setLive_(self, text):
-        """The phrase being recognised. Wraps onto a new row when it outgrows
-        one line and scrolls, so fast or long speech reads like a caption
-        instead of being cut off."""
+        """Show the newest line of speech, one line at a time.
+
+        When the sentence outgrows the line, the row retires and a fresh one
+        enters carrying the continuation — a caption that pages over, rather
+        than a block of text that grows or gets truncated.
+        """
         text = (text or "").strip()
         v = self.view
         live = [r for r in v.rows if not r.confirmed and r.state != "leave"]
@@ -569,16 +574,19 @@ class OverlayController(NSObject):
             for row in live:
                 row.leave()
             return
-        lines = wrap_lines(text, self.m.get("char_budget", 62))[-MAX_ROWS:]
-        # Update rows in place: a growing line must not restart its entrance
-        # animation on every pass.
-        for i, line in enumerate(lines):
-            if i < len(live):
-                live[i].retext(line, confirmed=False)
-            else:
-                v.rows.append(CaptionRow(line, confirmed=False))
-        for extra in live[len(lines):]:
-            extra.leave()
+        lines = wrap_lines(text, self.m.get("char_budget", 62))
+        page, current = len(lines), lines[-1]
+        row = live[-1] if live else None
+        if row is None or page > row.page:
+            # The line filled up: retire it and page over to a new one.
+            for old_row in live:
+                old_row.leave()
+            v.rows.append(CaptionRow(current, confirmed=False, page=page))
+        else:
+            # Same line still growing — update in place so it doesn't restart
+            # its entrance animation on every pass.
+            row.retext(current, confirmed=False)
+            row.page = page
         v.setNeedsDisplay_(True)
 
     def confirmPhrase_(self, text):

@@ -538,7 +538,10 @@ class VoiceFlow:
                 # Keep enough for the rows the overlay can show, so a fast
                 # talker's sentence wraps onto a second line instead of being
                 # chopped at a fixed character count.
-                budget = self._overlay.caption_budget() * self._overlay.MAX_ROWS
+                # Allow a few lines' worth through: the overlay shows only the
+                # newest line and pages over as each one fills, so the text
+                # needs room to cross a line boundary.
+                budget = self._overlay.caption_budget() * 3
                 words = text.split()
                 while len(" ".join(words)) > budget and len(words) > 3:
                     words = words[1:]
