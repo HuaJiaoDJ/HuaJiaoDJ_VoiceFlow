@@ -165,7 +165,7 @@ class SettingsController(NSObject):
 
     @objc.python_method
     def buildWindow(self):
-        W, H = 520, 720
+        W, H = 520, 780
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, W, H),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
@@ -246,7 +246,7 @@ class SettingsController(NSObject):
         self.auto_launch_box = NSButton.alloc().initWithFrame_(
             NSMakeRect(135, y, 320, 22))
         self.auto_launch_box.setButtonType_(NSSwitchButton)
-        self.auto_launch_box.setTitle_("Start auto transcribe when HuaJiaoDJ_VoiceFlow launches")
+        self.auto_launch_box.setTitle_("Start auto transcribe at launch")
         self.view.addSubview_(self.auto_launch_box)
 
         y -= 30
@@ -300,6 +300,22 @@ class SettingsController(NSObject):
         self.llm_box.setTitle_("Clean up transcripts with the model")
         self.view.addSubview_(self.llm_box)
 
+        y -= 26
+        self.caption_box = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 320, 22))
+        self.caption_box.setButtonType_(NSSwitchButton)
+        self.caption_box.setTitle_("Show live captions while speaking")
+        self.caption_box.setTarget_(self)
+        self.caption_box.setAction_("captionToggled:")
+        self.view.addSubview_(self.caption_box)
+
+        y -= 30
+        self.caption_label = self._label("Caption accuracy", 38, y + 3, 120)
+        self.caption_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(165, y, 250, 26))
+        self.caption_popup.addItemWithTitle_("Faster — lighter on CPU")
+        self.caption_popup.addItemWithTitle_("Accurate — recommended")
+        self.view.addSubview_(self.caption_popup)
+
         self.status = self._label("", 20, 22, 330)
         self.status.setFont_(NSFont.systemFontOfSize_(11))
         self.status.setTextColor_(NSColor.secondaryLabelColor())
@@ -331,6 +347,12 @@ class SettingsController(NSObject):
         self.overlay_box.setState_(
             1 if self.conf.get("overlay", {}).get("enabled", True) else 0)
         self.llm_box.setState_(1 if llm["enabled"] else 0)
+        pv = self.conf.get("preview", {})
+        on = bool(pv.get("enabled", True))
+        self.caption_box.setState_(1 if on else 0)
+        self.caption_popup.selectItemAtIndex_(
+            0 if pv.get("model", "base") == "tiny" else 1)
+        self._sync_caption_controls(on)
         self._refreshKeyStatus()
         self._loadModelsAsync()
 
@@ -373,6 +395,15 @@ class SettingsController(NSObject):
                 self.model_combo.setStringValue_(models[0])
 
     # ---------- actions ----------
+
+    @objc.python_method
+    def _sync_caption_controls(self, on):
+        self.caption_popup.setEnabled_(bool(on))
+        self.caption_label.setTextColor_(
+            NSColor.labelColor() if on else NSColor.tertiaryLabelColor())
+
+    def captionToggled_(self, _sender):
+        self._sync_caption_controls(bool(self.caption_box.state()))
 
     def backendChanged_(self, _sender):
         backend = self.backend_popup.titleOfSelectedItem()
@@ -460,6 +491,11 @@ class SettingsController(NSObject):
         conf["llm"]["enabled"] = bool(self.llm_box.state())
         conf["sounds"] = bool(self.sounds_box.state())
         conf.setdefault("overlay", {})["enabled"] = bool(self.overlay_box.state())
+        pv = conf.setdefault("preview", {})
+        pv["enabled"] = bool(self.caption_box.state())
+        pv["model"] = ("tiny", "base")[self.caption_popup.indexOfSelectedItem()]
+        # base needs ~0.7s a pass; don't let the refresh outrun it.
+        pv["interval"] = 0.7 if pv["model"] == "tiny" else 1.0
         with open(cfg.CONFIG_PATH, "w") as f:
             json.dump(conf, f, indent=2, ensure_ascii=False)
         self.conf = conf
