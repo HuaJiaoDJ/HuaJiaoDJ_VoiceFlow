@@ -98,11 +98,14 @@ DEFAULT_CONFIG = {
         # speaking. A second, much faster Whisper model does the running
         # transcription; the accurate model still produces the final text.
         "enabled": True,
-        # "tiny" keeps up in real time. "base" is more accurate but heavier —
-        # it competes with the real transcription for CPU.
-        "model": "tiny",
-        # Seconds between preview passes. Lower feels snappier and costs more.
-        "interval": 0.9,
+        # Measured on this machine over a 6s clip: tiny 0.43s/pass but
+        # misheard "something else" as "some videos"; base 0.67s/pass and got
+        # it right; small 2.19s — accurate but far too slow to run live.
+        # "base" is the accuracy/speed sweet spot. Drop to "tiny" on a loaded
+        # machine, at the cost of more wrong words in the caption.
+        "model": "base",
+        # Seconds between preview passes. Must exceed one pass (~0.7s on base).
+        "interval": 1.0,
         # Don't bother previewing until there's this much audio.
         "min_audio": 0.6,
     },
