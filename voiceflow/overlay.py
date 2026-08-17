@@ -20,13 +20,16 @@ from AppKit import (
     NSForegroundColorAttributeName,
     NSGraphicsContext,
     NSMutableParagraphStyle,
+    NSShadow,
+    NSShadowAttributeName,
     NSPanel,
     NSParagraphStyleAttributeName,
     NSRectFillUsingOperation,
     NSScreen,
     NSView,
 )
-from Foundation import NSMakeRect, NSObject, NSRunLoop, NSString, NSTimer
+from Foundation import (NSMakeRect, NSMutableAttributedString, NSObject,
+                        NSRunLoop, NSString, NSTimer)
 
 NSRunLoopCommonModes = "kCFRunLoopCommonModes"
 
@@ -61,6 +64,9 @@ MAX_ROWS = 1                # one line at a time; a full line pages over
 
 # Transition timings, from the caption spec.
 ENTER_SECS, LEAVE_SECS = 0.22, 0.30
+# Per-character reveal, matching the reference clip: each letter fades up
+# quickly, with a small stagger so a burst of new words types itself in.
+CHAR_FADE, CHAR_STAGGER = 0.16, 0.022
 ENTER_DY, LEAVE_DY = 6.0, -4.0
 LIVE_ALPHA = CONFIRMED_ALPHA = 1.0
 
@@ -78,7 +84,8 @@ def metrics(scale=1.0, font_size=BASE_FONT):
     line_h = _m.ceil((f.ascender() - f.descender() + f.leading()) * LINE_SPACING)
     pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
     row_h = line_h + PAD_Y * 2
-    caption_h = row_h * MAX_ROWS + ROW_GAP + 12.0
+    # Extra headroom for the text shadow, which extends past the glyphs.
+    caption_h = row_h * MAX_ROWS + ROW_GAP + 22.0
     panel_w = max(560.0, pill_w * 3.4)
     sample = "the quick brown fox jumps over the lazy dog and keeps on going"
     px = _S.stringWithString_(sample).sizeWithAttributes_({_FA: f}).width
@@ -131,12 +138,16 @@ class CaptionRow:
     """One line of caption, with its own fade/slide animation."""
 
     __slots__ = ("text", "confirmed", "alpha", "dy", "t", "state", "ns",
-                 "width", "page")
+                 "width", "page", "starts")
 
     def __init__(self, text, confirmed, page=0):
         self.text = text
         self.confirmed = confirmed
         self.page = page
+        # When each character began fading in, staggered so words arrive
+        # letter by letter rather than a whole phrase appearing at once.
+        now = time.time()
+        self.starts = [now + i * CHAR_STAGGER for i in range(len(text))]
         self.state = "enter"       # enter | hold | leave
         self.t = 0.0
         self.alpha = 0.0
@@ -146,10 +157,32 @@ class CaptionRow:
 
     def retext(self, text, confirmed):
         """Update a row in place — the live row grows as words arrive, and
-        rebuilding it each time would restart its entrance animation."""
+        rebuilding it each time would restart its entrance animation.
+
+        Characters already on screen keep their reveal time; only the newly
+        arrived tail starts fading in, staggered so it reads as typing.
+        """
         if text != self.text:
+            old = self.text
+            keep = 0
+            for a, b in zip(old, text):
+                if a != b:
+                    break
+                keep += 1
+            now = time.time()
+            starts = self.starts[:keep]
+            starts += [now + (i * CHAR_STAGGER) for i in range(len(text) - keep)]
+            self.starts = starts
             self.text, self.ns, self.width = text, None, None
         self.confirmed = confirmed
+
+    def char_alphas(self, now):
+        """0..1 opacity per character, so the tail fades in as it arrives."""
+        out = []
+        for start in self.starts:
+            k = (now - start) / CHAR_FADE
+            out.append(0.0 if k <= 0.0 else (1.0 if k >= 1.0 else k))
+        return out
 
     def leave(self):
         if self.state != "leave":
@@ -255,28 +288,50 @@ class WaveView(NSView):
 
     @objc.python_method
     def _draw_row(self, row, w, baseline_y):
-        """One caption row: rounded plate, then text, with the row's own
-        opacity and vertical offset applied."""
+        """One caption row: bare text, revealed character by character.
+
+        No background plate — the reference is plain type on the desktop. A
+        soft shadow carries legibility over light windows instead, which keeps
+        the words the only thing on screen.
+        """
         if not row.text or row.alpha <= 0.01:
             return
         a = row.alpha * self.alpha_target
         if a <= 0.01:
             return
         tw = min(self._row_width(row), w - 80.0)
-        plate_w, plate_h = tw + PAD_X * 2, self.m["line_h"] + PAD_Y * 2
-        bx = (w - plate_w) / 2.0
+        bx = (w - tw) / 2.0
         by = baseline_y + row.dy
-        NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.05, 0.06, 0.11, PLATE_ALPHA * a).set()
-        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            NSMakeRect(bx, by, plate_w, plate_h), CORNER, CORNER).fill()
-        # One text colour throughout. A dimmer "still being recognised" state
-        # drew attention to the recogniser rather than to the words.
-        colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.98, 0.98, 1.0, a)
-        row.ns.drawInRect_withAttributes_(
-            NSMakeRect(bx + PAD_X, by + PAD_Y, tw, self.m["line_h"]),
-            self._row_attrs(colour))
+
+        base = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.99, 0.99, 1.0, a)
+        attrs = self._row_attrs(base)
+        attrs = dict(attrs)
+        shadow = NSShadow.alloc().init()
+        shadow.setShadowColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0, 0, 0, 0.85 * a))
+        shadow.setShadowBlurRadius_(5.0)
+        shadow.setShadowOffset_((0, -1))
+        attrs[NSShadowAttributeName] = shadow
+
+        text = row.text
+        rect = NSMakeRect(bx, by + PAD_Y, tw, self.m["line_h"])
+        alphas = row.char_alphas(time.time())
+        if all(v >= 1.0 for v in alphas):
+            NSString.stringWithString_(text).drawInRect_withAttributes_(rect, attrs)
+            return
+        # Some of the tail is still fading: colour those characters
+        # individually so the phrase types itself in.
+        rich = NSMutableAttributedString.alloc().initWithString_attributes_(
+            text, attrs)
+        for i, v in enumerate(alphas[:len(text)]):
+            if v >= 1.0:
+                continue
+            rich.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    0.99, 0.99, 1.0, a * v),
+                (i, 1))
+        rich.drawInRect_(rect)
 
     @objc.python_method
     def _draw_caption(self, w):
