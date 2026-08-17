@@ -99,6 +99,8 @@ class WaveView(NSView):
         self.alpha = 0.0        # current window opacity
         self.alpha_target = 0.0
         self.caption = ""
+        self._cap_key = None
+        self._cap_layout = None
         self.m = metrics()
         self.t0 = time.time()
         return self
@@ -154,6 +156,16 @@ class WaveView(NSView):
         pad_x, pad_y = 14.0, 7.0
         max_w = w - 40.0
 
+        # Layout is cached per caption. Measuring text is expensive and the
+        # fit loop measures once per dropped word; doing that every frame cost
+        # 40ms/frame on 10s of fast speech (24fps) and 222ms on 300 words,
+        # which starved the main thread and made the HUD look frozen.
+        key = (text, self.m["font_size"], w)
+        if self._cap_key == key:
+            ns, tw, th = self._cap_layout
+            self._blit_caption(ns, tw, th, w, pad_x, pad_y, attrs)
+            return
+
         # Size from font metrics, not from the measured bounding box. The
         # measured height comes back a shade short and clipped the tops of the
         # glyphs; a whole number of line heights never does.
@@ -178,8 +190,13 @@ class WaveView(NSView):
         lines = min(MAX_CAPTION_LINES, lines)
         th = line_h * lines
         tw = min(max_w, max(60.0, math.ceil(measured.width) + 2.0))
+        self._cap_key = key
+        self._cap_layout = (ns, tw, th)
+        self._blit_caption(ns, tw, th, w, pad_x, pad_y, attrs)
 
-        # Background plate, sitting just above the pill.
+    @objc.python_method
+    def _blit_caption(self, ns, tw, th, w, pad_x, pad_y, attrs):
+        """Paint the cached caption. Cheap: no measurement, just drawing."""
         bx = (w - (tw + pad_x * 2)) / 2.0
         by = self.m["pill_h"] + 6.0
         plate = NSMakeRect(bx, by, tw + pad_x * 2, th + pad_y * 2)
@@ -452,7 +469,12 @@ class OverlayController(NSObject):
         self.view.setNeedsDisplay_(True)
 
     def setCaption_(self, text):
-        self.view.caption = text or ""
+        text = text or ""
+        # Only the tail can ever be displayed on one line, so never hand the
+        # layout more than it could possibly use.
+        if len(text) > 220:
+            text = text[-220:]
+        self.view.caption = text
         self.view.setNeedsDisplay_(True)
 
     def showIdle_(self, _):
