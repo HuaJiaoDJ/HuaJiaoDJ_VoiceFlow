@@ -50,8 +50,12 @@ NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
 # above it. Everything outside the drawn shapes is transparent, so with no
 # caption it looks exactly like the bare ellipse.
 PILL_W, PILL_H = 156.0, 64.0
-CAPTION_H = 62.0
-PANEL_W, PANEL_H = 520.0, PILL_H + CAPTION_H
+MAX_CAPTION_LINES = 2
+# Generous headroom: two lines at 15pt is ~40pt, plus padding and the gap above
+# the pill. Sized from the worst case so a caption can never be clipped by the
+# panel edge — the panel is transparent, so extra room costs nothing visually.
+CAPTION_H = 78.0
+PANEL_W, PANEL_H = 560.0, PILL_H + CAPTION_H
 FPS = 30.0
 
 # Gradient stops sampled across the ribbon: cyan -> violet -> pink.
@@ -132,15 +136,35 @@ class WaveView(NSView):
             NSForegroundColorAttributeName: colour,
             NSParagraphStyleAttributeName: style,
         }
-        pad_x, pad_y = 14.0, 8.0
+        pad_x, pad_y = 14.0, 7.0
         max_w = w - 40.0
-        ns = NSString.stringWithString_(text)
-        size = ns.boundingRectWithSize_options_attributes_(
-            (max_w, CAPTION_H), 1 << 0 | 1 << 3, attrs).size  # wraps, uses glyphs
-        tw = min(max_w, max(60.0, size.width))
-        th = min(CAPTION_H - pad_y * 2, size.height)
 
-        # Background plate, bottom-aligned just above the pill.
+        # Size from font metrics, not from the measured bounding box. The
+        # measured height comes back a shade short and clipped the tops of the
+        # glyphs; a whole number of line heights never does.
+        line_h = math.ceil(font.ascender() - font.descender() + font.leading())
+
+        # Keep the tail — the most recent words are the interesting ones — and
+        # drop leading words until it fits MAX_CAPTION_LINES.
+        ns = NSString.stringWithString_(text)
+        words = text.split()
+        while True:
+            measured = ns.boundingRectWithSize_options_attributes_(
+                (max_w, 10000.0), 1 << 0 | 1 << 3, attrs).size
+            # Round, don't ceil: a single line measures a shade over one
+            # line height and would otherwise reserve room for two.
+            lines = max(1, int(measured.height / line_h + 0.5))
+            if lines <= MAX_CAPTION_LINES or len(words) <= 3:
+                break
+            words = words[1:]
+            text = "… " + " ".join(words)
+            ns = NSString.stringWithString_(text)
+
+        lines = min(MAX_CAPTION_LINES, lines)
+        th = line_h * lines
+        tw = min(max_w, max(60.0, math.ceil(measured.width) + 2.0))
+
+        # Background plate, sitting just above the pill.
         bx = (w - (tw + pad_x * 2)) / 2.0
         by = PILL_H + 6.0
         plate = NSMakeRect(bx, by, tw + pad_x * 2, th + pad_y * 2)
