@@ -211,6 +211,7 @@ class VoiceFlow:
         self.auto_key = None
         self._menubar = None
         self._auto_held = False
+        self._take_seq = 0          # bumped per take; stale previews are dropped
         self._preview_tr = None     # fast model for live captions
         self._preview_loading = False
         self._dictate_held = False  # combo level, for edge detection
@@ -438,17 +439,29 @@ class VoiceFlow:
             if self.mode is None:
                 continue
             try:
+                # Tie this pass to the current take. A preview takes ~0.35s to
+                # run; without this, a result from the take that just ended
+                # could land on screen during the next one.
+                seq = self._take_seq
                 audio = self.recorder.snapshot()
                 min_len = float(p.get("min_audio", 0.6)) * self.conf["audio"]["sample_rate"]
                 if audio is None or len(audio) < min_len:
+                    continue
+                # Whisper invents phrases ("Thank you.", "you") when handed
+                # near-silence. Don't ask it about audio with no speech in it.
+                import numpy as _np
+                if float(_np.abs(audio).max()) < 0.012:
                     continue
                 tr = self._preview_transcriber()
                 if tr is None:
                     time.sleep(1.0)
                     continue
                 text = tr.transcribe(audio)
-                # A late result from a take that already ended must not linger.
-                if text and self.mode is not None and text != last_shown:
+                # Discard anything that finished after its take ended, or that
+                # belongs to a previous take.
+                if seq != self._take_seq or self.mode is None:
+                    continue
+                if text and text != last_shown:
                     last_shown = text
                     self._overlay.set_caption(text)
             except Exception as e:
@@ -566,6 +579,7 @@ class VoiceFlow:
                         self.target_app = frontmost_app_name()
                         self.selection = None
                         self._began_at = time.time()
+                        self._take_seq += 1
                         self.recorder.start(preroll=a["preroll"])
                         self.hud("show_listening")
                         speaking, silence, started = True, 0.0, time.time()
@@ -645,6 +659,7 @@ class VoiceFlow:
             self.busy.release()
             return
         self._began_at = time.time()
+        self._take_seq += 1
         # We swallow the hotkey, so macOS sees no input while it's held. Without
         # this the idle timer runs on and display sleep cuts the take short.
         try:
@@ -657,6 +672,7 @@ class VoiceFlow:
 
     def finish(self):
         mode = self.mode
+        self._take_seq += 1   # invalidate any preview still in flight
         audio = self.recorder.stop()
         self.mode = None
         power.end()
