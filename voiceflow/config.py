@@ -104,14 +104,18 @@ DEFAULT_CONFIG = {
         # "base" is the accuracy/speed sweet spot. Drop to "tiny" on a loaded
         # machine, at the cost of more wrong words in the caption.
         "model": "base",
-        # Seconds between preview passes. Must exceed one pass (~0.7s on base).
-        "interval": 1.0,
+        # Seconds between preview passes. A pass on a 4s window is ~0.66s,
+        # so 0.7 keeps the caption about as fresh as the model allows.
+        "interval": 0.7,
         # Don't bother previewing until there's this much audio.
         "min_audio": 0.6,
-        # Only the last N seconds are re-transcribed each pass. A full-take
-        # pass grows with how long you talk (0.8s at 5s of speech, 1.7s at
-        # 32s), which made the caption crawl; a window keeps it constant.
-        "window_seconds": 10.0,
+        # Only the last N seconds are re-transcribed each pass, so the caption
+        # tracks what you're saying *now* rather than replaying the whole take.
+        # Measured on fast continuous speech: a 4s window yields ~62 characters
+        # — about one line, which is all that can be shown — at the quickest
+        # pass time. Wider windows just transcribe text that gets truncated
+        # away, adding lag for nothing.
+        "window_seconds": 4.0,
     },
     "overlay": {
         # Floating waveform HUD shown while dictating.

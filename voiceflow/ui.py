@@ -518,8 +518,9 @@ class SettingsController(NSObject):
         pv = conf.setdefault("preview", {})
         pv["enabled"] = bool(self.caption_box.state())
         pv["model"] = ("tiny", "base")[self.caption_popup.indexOfSelectedItem()]
-        # base needs ~0.7s a pass; don't let the refresh outrun it.
-        pv["interval"] = 0.7 if pv["model"] == "tiny" else 1.0
+        # On a 4s window a pass is ~0.4s (tiny) / ~0.66s (base). Keep the
+        # refresh just above that so the caption stays as fresh as it can.
+        pv["interval"] = 0.5 if pv["model"] == "tiny" else 0.7
         with open(cfg.CONFIG_PATH, "w") as f:
             json.dump(conf, f, indent=2, ensure_ascii=False)
         self.conf = conf
