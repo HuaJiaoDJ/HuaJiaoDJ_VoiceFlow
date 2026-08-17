@@ -535,8 +535,12 @@ class VoiceFlow:
                     continue
                 # Keep the newest words. Only one line is ever shown, so hand
                 # the overlay the tail rather than the whole window.
+                # Keep enough for the rows the overlay can show, so a fast
+                # talker's sentence wraps onto a second line instead of being
+                # chopped at a fixed character count.
+                budget = self._overlay.caption_budget() * self._overlay.MAX_ROWS
                 words = text.split()
-                while len(" ".join(words)) > 90 and len(words) > 3:
+                while len(" ".join(words)) > budget and len(words) > 3:
                     words = words[1:]
                 text = " ".join(words)
                 if text != last_shown:
