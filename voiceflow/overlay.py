@@ -49,13 +49,27 @@ NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
 # The panel is wider/taller than the visible pill so live captions have room
 # above it. Everything outside the drawn shapes is transparent, so with no
 # caption it looks exactly like the bare ellipse.
-PILL_W, PILL_H = 156.0, 64.0
-MAX_CAPTION_LINES = 2
-# Generous headroom: two lines at 15pt is ~40pt, plus padding and the gap above
-# the pill. Sized from the worst case so a caption can never be clipped by the
-# panel edge — the panel is transparent, so extra room costs nothing visually.
-CAPTION_H = 78.0
-PANEL_W, PANEL_H = 560.0, PILL_H + CAPTION_H
+BASE_PILL_W, BASE_PILL_H = 156.0, 64.0
+BASE_FONT = 15.0
+# One line only: a caption is a glance, not a document. Longer speech keeps the
+# most recent words and drops the rest.
+MAX_CAPTION_LINES = 1
+
+
+def metrics(scale=1.0, font_size=BASE_FONT):
+    """Panel geometry for a given size setting."""
+    import math as _m
+    from AppKit import NSFont as _F
+    f = _F.systemFontOfSize_(font_size)
+    line_h = _m.ceil(f.ascender() - f.descender() + f.leading())
+    pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
+    caption_h = line_h * MAX_CAPTION_LINES + 14.0 + 10.0   # padding + gap
+    return {
+        "pill_w": pill_w, "pill_h": pill_h,
+        "caption_h": caption_h, "line_h": line_h, "font_size": font_size,
+        "panel_w": max(560.0, pill_w * 3.4),
+        "panel_h": pill_h + caption_h,
+    }
 FPS = 30.0
 
 # Gradient stops sampled across the ribbon: cyan -> violet -> pink.
@@ -85,6 +99,7 @@ class WaveView(NSView):
         self.alpha = 0.0        # current window opacity
         self.alpha_target = 0.0
         self.caption = ""
+        self.m = metrics()
         self.t0 = time.time()
         return self
 
@@ -125,7 +140,7 @@ class WaveView(NSView):
         text = (self.caption or "").strip()
         if not text or self.alpha_target <= 0.01:
             return
-        font = NSFont.systemFontOfSize_(15)
+        font = NSFont.systemFontOfSize_(self.m["font_size"])
         colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
             0.94, 0.95, 1.0, 0.95 * self.alpha_target)
         style = NSMutableParagraphStyle.alloc().init()
@@ -142,7 +157,7 @@ class WaveView(NSView):
         # Size from font metrics, not from the measured bounding box. The
         # measured height comes back a shade short and clipped the tops of the
         # glyphs; a whole number of line heights never does.
-        line_h = math.ceil(font.ascender() - font.descender() + font.leading())
+        line_h = self.m["line_h"]
 
         # Keep the tail — the most recent words are the interesting ones — and
         # drop leading words until it fits MAX_CAPTION_LINES.
@@ -166,7 +181,7 @@ class WaveView(NSView):
 
         # Background plate, sitting just above the pill.
         bx = (w - (tw + pad_x * 2)) / 2.0
-        by = PILL_H + 6.0
+        by = self.m["pill_h"] + 6.0
         plate = NSMakeRect(bx, by, tw + pad_x * 2, th + pad_y * 2)
         NSColor.colorWithCalibratedRed_green_blue_alpha_(
             0.05, 0.06, 0.11, 0.85 * self.alpha_target).set()
@@ -188,8 +203,9 @@ class WaveView(NSView):
 
         # The pill sits at the bottom; captions stack above it.
         inset = 3.0
-        cy = PILL_H / 2.0
-        ax, by = (PILL_W - inset * 2.0) / 2.0, (PILL_H - inset * 2.0) / 2.0
+        cy = self.m["pill_h"] / 2.0
+        ax, by = ((self.m["pill_w"] - inset * 2.0) / 2.0,
+                  (self.m["pill_h"] - inset * 2.0) / 2.0)
         disc_rect = NSMakeRect(cx - ax, cy - by, ax * 2.0, by * 2.0)
         disc = NSBezierPath.bezierPathWithOvalInRect_(disc_rect)
 
@@ -249,7 +265,8 @@ class OverlayController(NSObject):
         if self is None:
             return None
         self.y_offset = 120.0
-        rect = NSMakeRect(0, 0, PANEL_W, PANEL_H)
+        self.m = metrics()
+        rect = NSMakeRect(0, 0, self.m['panel_w'], self.m['panel_h'])
         self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             rect,
             NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
@@ -274,6 +291,7 @@ class OverlayController(NSObject):
         )
         self.view = WaveView.alloc().initWithFrame_(rect)
         self.view.recorder = recorder
+        self.view.m = self.m
         self.panel.setContentView_(self.view)
         self.saved_position = None
         self._placing = False   # True while we move the panel ourselves
@@ -306,8 +324,8 @@ class OverlayController(NSObject):
     def _screen_for_point(self, x, y):
         for s in NSScreen.screens():
             f = s.frame()
-            if (f.origin.x <= x + PANEL_W / 2 <= f.origin.x + f.size.width
-                    and f.origin.y <= y + PANEL_H / 2 <= f.origin.y + f.size.height):
+            if (f.origin.x <= x + self.m['panel_w'] / 2 <= f.origin.x + f.size.width
+                    and f.origin.y <= y + self.m['panel_h'] / 2 <= f.origin.y + f.size.height):
                 return s
         return None
 
@@ -333,15 +351,15 @@ class OverlayController(NSObject):
             x = vf.origin.x + dx
             y = vf.origin.y + dy
         else:
-            x = vf.origin.x + (vf.size.width - PANEL_W) / 2.0
+            x = vf.origin.x + (vf.size.width - self.m['panel_w']) / 2.0
             y = vf.origin.y + self.y_offset
 
         # Always keep it fully on the visible area of that screen.
-        x = max(vf.origin.x, min(x, vf.origin.x + vf.size.width - PANEL_W))
-        y = max(vf.origin.y, min(y, vf.origin.y + vf.size.height - PANEL_H))
+        x = max(vf.origin.x, min(x, vf.origin.x + vf.size.width - self.m['panel_w']))
+        y = max(vf.origin.y, min(y, vf.origin.y + vf.size.height - self.m['panel_h']))
 
         self._placing = True
-        self.panel.setFrame_display_(NSMakeRect(x, y, PANEL_W, PANEL_H), False)
+        self.panel.setFrame_display_(NSMakeRect(x, y, self.m['panel_w'], self.m['panel_h']), False)
         self._placing = False
 
     def _appear(self):
@@ -420,6 +438,19 @@ class OverlayController(NSObject):
             pass
         self._reposition()
 
+    def applyMetrics_(self, payload):
+        """Resize the HUD for a new size setting (scale, font size)."""
+        scale, font_size = payload
+        self.m = metrics(scale, font_size)
+        self.view.m = self.m
+        f = self.panel.frame()
+        self.panel.setFrame_display_(
+            NSMakeRect(f.origin.x, f.origin.y,
+                       self.m["panel_w"], self.m["panel_h"]), False)
+        self.view.setFrame_(NSMakeRect(0, 0, self.m["panel_w"], self.m["panel_h"]))
+        self._reposition()
+        self.view.setNeedsDisplay_(True)
+
     def setCaption_(self, text):
         self.view.caption = text or ""
         self.view.setNeedsDisplay_(True)
@@ -442,7 +473,8 @@ class OverlayController(NSObject):
 _controller = None
 
 
-def start(recorder, y_offset=120.0, position=None, locked=False):
+def start(recorder, y_offset=120.0, position=None, locked=False,
+          scale=1.0, font_size=BASE_FONT):
     """Create the panel. Must be called on the main thread before run_forever."""
     global _controller
     app = NSApplication.sharedApplication()
@@ -450,6 +482,7 @@ def start(recorder, y_offset=120.0, position=None, locked=False):
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     _controller = OverlayController.alloc().initWithRecorder_(recorder)
     _controller.y_offset = y_offset
+    _controller.applyMetrics_((scale, font_size))
     if isinstance(position, dict):
         if "dx" in position and "dy" in position:
             _controller.saved_position = (float(position["dx"]), float(position["dy"]))
@@ -465,6 +498,14 @@ def start(recorder, y_offset=120.0, position=None, locked=False):
         _controller.panel.setIgnoresMouseEvents_(True)
         _controller.panel.setMovableByWindowBackground_(False)
     return _controller
+
+
+def set_metrics(scale, font_size):
+    """Change HUD size at runtime (call from any thread)."""
+    if _controller is None:
+        return
+    _controller.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "applyMetrics:", (float(scale), float(font_size)), False)
 
 
 def reset_position():

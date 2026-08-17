@@ -108,6 +108,10 @@ DEFAULT_CONFIG = {
         "interval": 1.0,
         # Don't bother previewing until there's this much audio.
         "min_audio": 0.6,
+        # Only the last N seconds are re-transcribed each pass. A full-take
+        # pass grows with how long you talk (0.8s at 5s of speech, 1.7s at
+        # 32s), which made the caption crawl; a window keeps it constant.
+        "window_seconds": 10.0,
     },
     "overlay": {
         # Floating waveform HUD shown while dictating.
@@ -119,6 +123,10 @@ DEFAULT_CONFIG = {
         "position": None,
         # true = click-through (can't be dragged, never blocks a click).
         "locked": False,
+        # Size of the waveform pill: 1.0 is the default, 0.8 small, 1.3 large.
+        "scale": 1.0,
+        # Caption text size in points.
+        "font_size": 15,
     },
     "sounds": True,
 }

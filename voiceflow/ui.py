@@ -165,7 +165,7 @@ class SettingsController(NSObject):
 
     @objc.python_method
     def buildWindow(self):
-        W, H = 520, 780
+        W, H = 520, 840
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, W, H),
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
@@ -309,6 +309,22 @@ class SettingsController(NSObject):
         self.view.addSubview_(self.caption_box)
 
         y -= 30
+        self._label("Overlay size", 38, y + 3, 120)
+        self.size_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(165, y, 250, 26))
+        for t in ("Small", "Medium — default", "Large"):
+            self.size_popup.addItemWithTitle_(t)
+        self.view.addSubview_(self.size_popup)
+
+        y -= 30
+        self._label("Text size", 38, y + 3, 120)
+        self.text_popup = NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(165, y, 250, 26))
+        for t in ("Small", "Medium — default", "Large"):
+            self.text_popup.addItemWithTitle_(t)
+        self.view.addSubview_(self.text_popup)
+
+        y -= 30
         self.caption_label = self._label("Caption accuracy", 38, y + 3, 120)
         self.caption_popup = NSPopUpButton.alloc().initWithFrame_(
             NSMakeRect(165, y, 250, 26))
@@ -352,6 +368,11 @@ class SettingsController(NSObject):
         self.caption_box.setState_(1 if on else 0)
         self.caption_popup.selectItemAtIndex_(
             0 if pv.get("model", "base") == "tiny" else 1)
+        ovl = self.conf.get("overlay", {})
+        sc = float(ovl.get("scale", 1.0))
+        self.size_popup.selectItemAtIndex_(0 if sc < 0.95 else (2 if sc > 1.1 else 1))
+        fs = int(ovl.get("font_size", 15))
+        self.text_popup.selectItemAtIndex_(0 if fs < 14 else (2 if fs > 16 else 1))
         self._sync_caption_controls(on)
         self._refreshKeyStatus()
         self._loadModelsAsync()
@@ -490,7 +511,10 @@ class SettingsController(NSObject):
         conf["llm"]["model"] = self.model_combo.stringValue().strip()
         conf["llm"]["enabled"] = bool(self.llm_box.state())
         conf["sounds"] = bool(self.sounds_box.state())
-        conf.setdefault("overlay", {})["enabled"] = bool(self.overlay_box.state())
+        ovl = conf.setdefault("overlay", {})
+        ovl["enabled"] = bool(self.overlay_box.state())
+        ovl["scale"] = (0.8, 1.0, 1.3)[self.size_popup.indexOfSelectedItem()]
+        ovl["font_size"] = (13, 15, 18)[self.text_popup.indexOfSelectedItem()]
         pv = conf.setdefault("preview", {})
         pv["enabled"] = bool(self.caption_box.state())
         pv["model"] = ("tiny", "base")[self.caption_popup.indexOfSelectedItem()]

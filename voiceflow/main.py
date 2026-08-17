@@ -425,6 +425,7 @@ class VoiceFlow:
         final transcription always comes from the real model.
         """
         last_shown = ""
+        last_pass = 0.0
         while True:
             p = self.conf.get("preview", {})
             if not p.get("enabled", True) or self._overlay is None:
@@ -435,18 +436,32 @@ class VoiceFlow:
                     last_shown = ""
                 time.sleep(0.15)
                 continue
-            time.sleep(float(p.get("interval", 0.9)))
+            # Hold a steady cadence: wait the remainder of the interval, not a
+            # full interval *on top of* however long the last pass took. Without
+            # this the gap between updates grew with the pass time and the
+            # caption looked frozen while you kept talking.
+            wait = float(p.get("interval", 1.0)) - last_pass
+            time.sleep(max(0.05, wait))
             if self.mode is None:
                 continue
+            pass_started = time.time()
             try:
                 # Tie this pass to the current take. A preview takes ~0.35s to
                 # run; without this, a result from the take that just ended
                 # could land on screen during the next one.
                 seq = self._take_seq
                 audio = self.recorder.snapshot()
-                min_len = float(p.get("min_audio", 0.6)) * self.conf["audio"]["sample_rate"]
+                rate = self.conf["audio"]["sample_rate"]
+                min_len = float(p.get("min_audio", 0.6)) * rate
                 if audio is None or len(audio) < min_len:
                     continue
+                # Only transcribe the tail. On continuous speech a full-take
+                # pass grows from 0.8s at 5s to 1.7s at 32s, so updates crawl
+                # the longer you talk. A fixed window keeps every pass cheap,
+                # and the caption only shows the most recent line anyway.
+                window = int(float(p.get("window_seconds", 10.0)) * rate)
+                if len(audio) > window:
+                    audio = audio[-window:]
                 # Whisper invents phrases ("Thank you.", "you") when handed
                 # near-silence. Don't ask it about audio with no speech in it.
                 import numpy as _np
@@ -467,6 +482,8 @@ class VoiceFlow:
             except Exception as e:
                 self.log(f"[preview] {e}")
                 time.sleep(1.0)
+            finally:
+                last_pass = time.time() - pass_started
 
     def _preview_transcriber(self):
         """Load the small preview model once, in the background."""
@@ -635,6 +652,10 @@ class VoiceFlow:
             self.command_key = parse_hotkey(self.conf["hotkeys"]["command"])
             hk_auto = self.conf["hotkeys"].get("auto")
             self.auto_key = parse_hotkey(hk_auto) if hk_auto else None
+            if self._overlay is not None:
+                o = self.conf.get("overlay", {})
+                self._overlay.set_metrics(float(o.get("scale", 1.0)),
+                                          float(o.get("font_size", 15)))
             self.log(f"[config] reloaded — sounds={'on' if self.conf['sounds'] else 'off'}, "
                      f"dictate=[{self.conf['hotkeys']['dictate']}], "
                      f"command=[{self.conf['hotkeys']['command']}]")
@@ -847,7 +868,9 @@ class VoiceFlow:
                 from . import overlay, ui
                 overlay.start(self.recorder, y_offset=float(ov.get("y_offset", 120)),
                               position=ov.get("position"),
-                              locked=bool(ov.get("locked", False)))
+                              locked=bool(ov.get("locked", False)),
+                              scale=float(ov.get("scale", 1.0)),
+                              font_size=float(ov.get("font_size", 15)))
                 self._overlay = overlay
                 self.log("Waveform overlay ready.")
                 try:
