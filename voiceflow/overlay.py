@@ -50,15 +50,14 @@ NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
 # above it. Everything outside the drawn shapes is transparent, so with no
 # caption it looks exactly like the bare ellipse.
 BASE_PILL_W, BASE_PILL_H = 156.0, 64.0
-# Subtitle-scale type: read at presentation distance, not glanced at.
-BASE_FONT = 22.0
-CAPTION_WEIGHT = 0.3        # semibold
-LINE_SPACING = 1.35
-PAD_X, PAD_Y = 16.0, 12.0
+BASE_FONT = 15.0
+CAPTION_WEIGHT = 0.0        # regular
+LINE_SPACING = 1.0
+PAD_X, PAD_Y = 14.0, 7.0
 ROW_GAP = 6.0
-CORNER = 14.0
-PLATE_ALPHA = 0.65
-MAX_ROWS = 2                # never more than two rows on screen at once
+CORNER = 12.0
+PLATE_ALPHA = 0.85
+MAX_ROWS = 1                # one phrase on screen at a time
 
 # Transition timings, from the caption spec.
 ENTER_SECS, LEAVE_SECS = 0.22, 0.30
@@ -81,7 +80,7 @@ def metrics(scale=1.0, font_size=BASE_FONT):
     pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
     row_h = line_h + PAD_Y * 2
     caption_h = row_h * MAX_ROWS + ROW_GAP + 12.0
-    panel_w = max(860.0, pill_w * 4.0)
+    panel_w = max(560.0, pill_w * 3.4)
     sample = "the quick brown fox jumps over the lazy dog and keeps on going"
     px = _S.stringWithString_(sample).sizeWithAttributes_({_FA: f}).width
     avg = max(4.0, px / len(sample))
@@ -248,7 +247,7 @@ class WaveView(NSView):
         bx = (w - plate_w) / 2.0
         by = baseline_y + row.dy
         NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.0, 0.0, 0.0, PLATE_ALPHA * a).set()
+            0.05, 0.06, 0.11, PLATE_ALPHA * a).set()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             NSMakeRect(bx, by, plate_w, plate_h), CORNER, CORNER).fill()
         # Confirmed text is near-white; text still being recognised is greyer
@@ -271,10 +270,16 @@ class WaveView(NSView):
         rows = [r for r in self.rows if r.alpha > 0.01]
         if not rows:
             return
-        base = self.m["pill_h"] + 10.0
+        base = self.m["pill_h"] + 8.0
         row_h = self.m["row_h"] + ROW_GAP
+        # A retiring phrase fades out where it stood, so the replacement
+        # crossfades over it rather than the row vanishing outright.
+        for row in rows:
+            if row.state == "leave":
+                self._draw_row(row, w, base)
+        current = [r for r in rows if r.state != "leave"]
         # Oldest on top: the newest row sits closest to the pill.
-        for i, row in enumerate(reversed(rows[-MAX_ROWS:])):
+        for i, row in enumerate(reversed(current[-MAX_ROWS:])):
             self._draw_row(row, w, base + i * row_h)
 
     def drawRect_(self, _rect):
