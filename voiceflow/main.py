@@ -783,10 +783,15 @@ class VoiceFlow:
             t0 = time.time()
             transcript = self.transcriber.transcribe(audio)
             self.log(f"[stt {time.time() - t0:.1f}s] {transcript!r}")
-            # Don't replay the transcript on the overlay: it has already been
-            # read phrase by phrase, and repeating the whole thing at the end
-            # is just noise. The text lands in the app instead.
-            self.hud_caption("")
+            # Correct the caption with the accurate transcript.
+            #
+            # The live caption comes from a small fast model, so it lands the
+            # gist but gets the odd word wrong ("overlay shows" for "overlays
+            # show"). Clearing it left that wrong wording as the last thing on
+            # screen. Showing the real transcript here means any error the user
+            # noticed visibly resolves, and it stays up through the cleanup and
+            # paste — which is exactly when they are waiting anyway.
+            self.hud_caption(transcript)
             if not transcript:
                 self.sound(SOUND_ERROR)
                 return
