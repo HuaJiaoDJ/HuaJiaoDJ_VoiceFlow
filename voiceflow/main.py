@@ -185,6 +185,55 @@ def hotkey_satisfied(spec, down):
     return True
 
 
+def _norm(word):
+    return "".join(c for c in word.lower() if c.isalnum())
+
+
+def _new_words(shown, window):
+    """Words in `window` that aren't already on screen.
+
+    The preview re-transcribes a sliding window, so each pass overlaps the
+    last. Match the longest suffix of what's shown against the head of the
+    window and treat the remainder as newly spoken.
+    """
+    if not shown:
+        return window
+    a = [_norm(x) for x in shown]
+    b = [_norm(x) for x in window]
+    # Anchor on the last few words already displayed and find them *anywhere*
+    # in the window, not just at its head: after a line flip those words sit
+    # mid-window, and matching only the head replayed speech already read.
+    for n in range(min(5, len(a)), 0, -1):
+        anchor = a[-n:]
+        for i in range(len(b) - n, -1, -1):
+            if b[i:i + n] == anchor:
+                return window[i + n:]
+    return window
+
+
+def _advance_caption(shown, text, budget):
+    """Grow the caption line, flipping to a fresh one when it's full.
+
+    Captions are read, not scrolled: rather than sliding old words leftwards
+    out of view, fill a line and then start the next one with whatever is
+    being said now.
+    """
+    window = text.split()
+    if not window:
+        return " ".join(shown), shown
+    fresh = _new_words(shown, window)
+    if not fresh:
+        return " ".join(shown), shown
+    candidate = shown + fresh
+    if len(" ".join(candidate)) <= budget:
+        return " ".join(candidate), candidate
+    # Full: begin a new line with the current words only.
+    line = fresh
+    while len(" ".join(line)) > budget and len(line) > 1:
+        line = line[1:]
+    return " ".join(line), line
+
+
 class VoiceFlow:
     def __init__(self, conf, dictionary):
         self.conf = conf
@@ -425,6 +474,7 @@ class VoiceFlow:
         final transcription always comes from the real model.
         """
         last_shown = ""
+        shown_words = []
         last_pass = 0.0
         while True:
             p = self.conf.get("preview", {})
@@ -432,8 +482,8 @@ class VoiceFlow:
                 time.sleep(0.5)
                 continue
             if self.mode is None:
-                if last_shown:
-                    last_shown = ""
+                if last_shown or shown_words:
+                    last_shown, shown_words = "", []
                 time.sleep(0.15)
                 continue
             # Hold a steady cadence: wait the remainder of the interval, not a
@@ -476,9 +526,13 @@ class VoiceFlow:
                 # belongs to a previous take.
                 if seq != self._take_seq or self.mode is None:
                     continue
-                if text and text != last_shown:
-                    last_shown = text
-                    self._overlay.set_caption(text)
+                if not text:
+                    continue
+                line, shown_words = _advance_caption(
+                    shown_words, text, self._overlay.caption_budget())
+                if line != last_shown:
+                    last_shown = line
+                    self._overlay.set_caption(line)
             except Exception as e:
                 self.log(f"[preview] {e}")
                 time.sleep(1.0)

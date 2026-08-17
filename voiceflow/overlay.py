@@ -64,11 +64,20 @@ def metrics(scale=1.0, font_size=BASE_FONT):
     line_h = _m.ceil(f.ascender() - f.descender() + f.leading())
     pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
     caption_h = line_h * MAX_CAPTION_LINES + 14.0 + 10.0   # padding + gap
+    panel_w = max(560.0, pill_w * 3.4)
+    # Characters that fit on one line, so the caller can decide when to start
+    # a fresh line instead of scrolling older words out of view.
+    from Foundation import NSString as _S
+    from AppKit import NSFontAttributeName as _FA
+    sample = "the quick brown fox jumps over the lazy dog and keeps going"
+    px = _S.stringWithString_(sample).sizeWithAttributes_({_FA: f}).width
+    avg = max(4.0, px / len(sample))
     return {
         "pill_w": pill_w, "pill_h": pill_h,
         "caption_h": caption_h, "line_h": line_h, "font_size": font_size,
-        "panel_w": max(560.0, pill_w * 3.4),
+        "panel_w": panel_w,
         "panel_h": pill_h + caption_h,
+        "char_budget": max(20, int((panel_w - 68.0) / avg)),
     }
 FPS = 30.0
 
@@ -520,6 +529,13 @@ def start(recorder, y_offset=120.0, position=None, locked=False,
         _controller.panel.setIgnoresMouseEvents_(True)
         _controller.panel.setMovableByWindowBackground_(False)
     return _controller
+
+
+def caption_budget():
+    """Characters that fit on one caption line at the current size."""
+    if _controller is None:
+        return 62
+    return _controller.m.get("char_budget", 62)
 
 
 def set_metrics(scale, font_size):
