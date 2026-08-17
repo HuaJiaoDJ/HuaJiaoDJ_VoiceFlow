@@ -50,35 +50,51 @@ NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
 # above it. Everything outside the drawn shapes is transparent, so with no
 # caption it looks exactly like the bare ellipse.
 BASE_PILL_W, BASE_PILL_H = 156.0, 64.0
-BASE_FONT = 15.0
-# One line only: a caption is a glance, not a document. Longer speech keeps the
-# most recent words and drops the rest.
-MAX_CAPTION_LINES = 1
+# Subtitle-scale type: read at presentation distance, not glanced at.
+BASE_FONT = 22.0
+CAPTION_WEIGHT = 0.3        # semibold
+LINE_SPACING = 1.35
+PAD_X, PAD_Y = 16.0, 12.0
+ROW_GAP = 6.0
+CORNER = 14.0
+PLATE_ALPHA = 0.65
+MAX_ROWS = 2                # never more than two rows on screen at once
+
+# Transition timings, from the caption spec.
+ENTER_SECS, LEAVE_SECS = 0.22, 0.30
+ENTER_DY, LEAVE_DY = 6.0, -4.0
+# A phrase still being recognised is dimmer than a confirmed one.
+LIVE_ALPHA, CONFIRMED_ALPHA = 0.62, 1.0
 
 
 def metrics(scale=1.0, font_size=BASE_FONT):
-    """Panel geometry for a given size setting."""
+    """Panel geometry for a given size setting.
+
+    Sized for subtitles rather than a status label: presentation-distance
+    type, room for two rows, and generous padding.
+    """
     import math as _m
-    from AppKit import NSFont as _F
-    f = _F.systemFontOfSize_(font_size)
-    line_h = _m.ceil(f.ascender() - f.descender() + f.leading())
-    pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
-    caption_h = line_h * MAX_CAPTION_LINES + 14.0 + 10.0   # padding + gap
-    panel_w = max(560.0, pill_w * 3.4)
-    # Characters that fit on one line, so the caller can decide when to start
-    # a fresh line instead of scrolling older words out of view.
+    from AppKit import NSFont as _F, NSFontAttributeName as _FA
     from Foundation import NSString as _S
-    from AppKit import NSFontAttributeName as _FA
-    sample = "the quick brown fox jumps over the lazy dog and keeps going"
+    f = _F.systemFontOfSize_weight_(font_size, CAPTION_WEIGHT)
+    line_h = _m.ceil((f.ascender() - f.descender() + f.leading()) * LINE_SPACING)
+    pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
+    row_h = line_h + PAD_Y * 2
+    caption_h = row_h * MAX_ROWS + ROW_GAP + 12.0
+    panel_w = max(860.0, pill_w * 4.0)
+    sample = "the quick brown fox jumps over the lazy dog and keeps on going"
     px = _S.stringWithString_(sample).sizeWithAttributes_({_FA: f}).width
     avg = max(4.0, px / len(sample))
     return {
         "pill_w": pill_w, "pill_h": pill_h,
-        "caption_h": caption_h, "line_h": line_h, "font_size": font_size,
+        "caption_h": caption_h, "line_h": line_h, "row_h": row_h,
+        "font_size": font_size, "font": f,
         "panel_w": panel_w,
         "panel_h": pill_h + caption_h,
-        "char_budget": max(20, int((panel_w - 68.0) / avg)),
+        "char_budget": max(20, int((panel_w - 80.0 - PAD_X * 2) / avg)),
     }
+
+
 FPS = 30.0
 
 # Gradient stops sampled across the ribbon: cyan -> violet -> pink.
@@ -94,6 +110,53 @@ def _grad(t):
     return tuple(a[i] + (b[i] - a[i]) * u for i in range(3))
 
 
+class CaptionRow:
+    """One line of caption, with its own fade/slide animation."""
+
+    __slots__ = ("text", "confirmed", "alpha", "dy", "t", "state", "ns", "width")
+
+    def __init__(self, text, confirmed):
+        self.text = text
+        self.confirmed = confirmed
+        self.state = "enter"       # enter | hold | leave
+        self.t = 0.0
+        self.alpha = 0.0
+        self.dy = ENTER_DY
+        self.ns = None
+        self.width = None
+
+    def retext(self, text, confirmed):
+        """Update a row in place — the live row grows as words arrive, and
+        rebuilding it each time would restart its entrance animation."""
+        if text != self.text:
+            self.text, self.ns, self.width = text, None, None
+        self.confirmed = confirmed
+
+    def leave(self):
+        if self.state != "leave":
+            self.state, self.t = "leave", 0.0
+
+    def advance(self, dt):
+        self.t += dt
+        target = 1.0
+        if self.state == "enter":
+            k = min(1.0, self.t / ENTER_SECS)
+            e = 1.0 - (1.0 - k) ** 3          # ease-out
+            self.alpha = target * e
+            self.dy = ENTER_DY * (1.0 - e)
+            if k >= 1.0:
+                self.state = "hold"
+        elif self.state == "hold":
+            self.alpha += (target - self.alpha) * 0.25
+            self.dy += (0.0 - self.dy) * 0.25
+        else:
+            k = min(1.0, self.t / LEAVE_SECS)
+            e = k * k
+            self.alpha = max(0.0, target * (1.0 - e))
+            self.dy = LEAVE_DY * e
+        return not (self.state == "leave" and self.alpha <= 0.01)
+
+
 class WaveView(NSView):
     """Draws the reactive ribbon. All state lives in plain Python attrs."""
 
@@ -107,9 +170,8 @@ class WaveView(NSView):
         self.amp = 0.0          # smoothed 0..1
         self.alpha = 0.0        # current window opacity
         self.alpha_target = 0.0
-        self.caption = ""
-        self._cap_key = None
-        self._cap_layout = None
+        self.rows = []      # CaptionRow, oldest first
+        self._last_tick = time.time()
         self.m = metrics()
         self.t0 = time.time()
         return self
@@ -141,79 +203,79 @@ class WaveView(NSView):
             self.phase += 0.13 + 0.22 * self.amp
         k = 0.45 if target > self.amp else 0.12
         self.amp += (target - self.amp) * k
+
+        now = time.time()
+        dt = min(0.1, now - self._last_tick)
+        self._last_tick = now
+        if self.rows:
+            self.rows = [r for r in self.rows if r.advance(dt)]
         self.setNeedsDisplay_(True)
 
     # ---- drawing ----
 
     @objc.python_method
-    def _draw_caption(self, w):
-        """Live transcription text, in a pill above the waveform."""
-        text = (self.caption or "").strip()
-        if not text or self.alpha_target <= 0.01:
-            return
-        font = NSFont.systemFontOfSize_(self.m["font_size"])
-        colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.94, 0.95, 1.0, 0.95 * self.alpha_target)
+    def _row_attrs(self, colour):
         style = NSMutableParagraphStyle.alloc().init()
-        style.setAlignment_(2)          # centred
-        style.setLineBreakMode_(0)      # wrap by word
-        attrs = {
-            NSFontAttributeName: font,
+        style.setAlignment_(2)      # centred
+        style.setLineBreakMode_(4)  # truncate tail; phrases are pre-sized
+        return {
+            NSFontAttributeName: self.m["font"],
             NSForegroundColorAttributeName: colour,
             NSParagraphStyleAttributeName: style,
         }
-        pad_x, pad_y = 14.0, 7.0
-        max_w = w - 40.0
-
-        # Layout is cached per caption. Measuring text is expensive and the
-        # fit loop measures once per dropped word; doing that every frame cost
-        # 40ms/frame on 10s of fast speech (24fps) and 222ms on 300 words,
-        # which starved the main thread and made the HUD look frozen.
-        key = (text, self.m["font_size"], w)
-        if self._cap_key == key:
-            ns, tw, th = self._cap_layout
-            self._blit_caption(ns, tw, th, w, pad_x, pad_y, attrs)
-            return
-
-        # Size from font metrics, not from the measured bounding box. The
-        # measured height comes back a shade short and clipped the tops of the
-        # glyphs; a whole number of line heights never does.
-        line_h = self.m["line_h"]
-
-        # Keep the tail — the most recent words are the interesting ones — and
-        # drop leading words until it fits MAX_CAPTION_LINES.
-        ns = NSString.stringWithString_(text)
-        words = text.split()
-        while True:
-            measured = ns.boundingRectWithSize_options_attributes_(
-                (max_w, 10000.0), 1 << 0 | 1 << 3, attrs).size
-            # Round, don't ceil: a single line measures a shade over one
-            # line height and would otherwise reserve room for two.
-            lines = max(1, int(measured.height / line_h + 0.5))
-            if lines <= MAX_CAPTION_LINES or len(words) <= 3:
-                break
-            words = words[1:]
-            text = "… " + " ".join(words)
-            ns = NSString.stringWithString_(text)
-
-        lines = min(MAX_CAPTION_LINES, lines)
-        th = line_h * lines
-        tw = min(max_w, max(60.0, math.ceil(measured.width) + 2.0))
-        self._cap_key = key
-        self._cap_layout = (ns, tw, th)
-        self._blit_caption(ns, tw, th, w, pad_x, pad_y, attrs)
 
     @objc.python_method
-    def _blit_caption(self, ns, tw, th, w, pad_x, pad_y, attrs):
-        """Paint the cached caption. Cheap: no measurement, just drawing."""
-        bx = (w - (tw + pad_x * 2)) / 2.0
-        by = self.m["pill_h"] + 6.0
-        plate = NSMakeRect(bx, by, tw + pad_x * 2, th + pad_y * 2)
+    def _row_width(self, row):
+        """Measured once per phrase, then cached — measuring every frame at
+        30fps is what made long captions stall the HUD."""
+        if row.width is None:
+            attrs = self._row_attrs(NSColor.whiteColor())
+            row.ns = NSString.stringWithString_(row.text)
+            row.width = float(row.ns.sizeWithAttributes_(attrs).width)
+        return row.width
+
+    @objc.python_method
+    def _draw_row(self, row, w, baseline_y):
+        """One caption row: rounded plate, then text, with the row's own
+        opacity and vertical offset applied."""
+        if not row.text or row.alpha <= 0.01:
+            return
+        a = row.alpha * self.alpha_target
+        if a <= 0.01:
+            return
+        tw = min(self._row_width(row), w - 80.0)
+        plate_w, plate_h = tw + PAD_X * 2, self.m["line_h"] + PAD_Y * 2
+        bx = (w - plate_w) / 2.0
+        by = baseline_y + row.dy
         NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.05, 0.06, 0.11, 0.85 * self.alpha_target).set()
-        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(plate, 12, 12).fill()
-        ns.drawInRect_withAttributes_(
-            NSMakeRect(bx + pad_x, by + pad_y, tw, th), attrs)
+            0.0, 0.0, 0.0, PLATE_ALPHA * a).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(bx, by, plate_w, plate_h), CORNER, CORNER).fill()
+        # Confirmed text is near-white; text still being recognised is greyer
+        # and slightly transparent, so settled words read as settled.
+        if row.confirmed:
+            colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.98, 0.98, 1.0, a * CONFIRMED_ALPHA)
+        else:
+            colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.80, 0.82, 0.86, a * LIVE_ALPHA)
+        row.ns.drawInRect_withAttributes_(
+            NSMakeRect(bx + PAD_X, by + PAD_Y, tw, self.m["line_h"]),
+            self._row_attrs(colour))
+
+    @objc.python_method
+    def _draw_caption(self, w):
+        """Up to two rows above the pill: the settled phrase, then the live one."""
+        if self.alpha_target <= 0.01:
+            return
+        rows = [r for r in self.rows if r.alpha > 0.01]
+        if not rows:
+            return
+        base = self.m["pill_h"] + 10.0
+        row_h = self.m["row_h"] + ROW_GAP
+        # Oldest on top: the newest row sits closest to the pill.
+        for i, row in enumerate(reversed(rows[-MAX_ROWS:])):
+            self._draw_row(row, w, base + i * row_h)
 
     def drawRect_(self, _rect):
         b = self.bounds()
@@ -401,7 +463,7 @@ class OverlayController(NSObject):
     def showListening_(self, _):
         self.view.state = "listening"
         self.view.amp = 0.0
-        self.view.caption = ""      # fresh take, fresh caption
+        self.view.rows = []         # fresh take, fresh captions
         try:
             self._reposition()
             self._appear()
@@ -477,13 +539,42 @@ class OverlayController(NSObject):
         self._reposition()
         self.view.setNeedsDisplay_(True)
 
-    def setCaption_(self, text):
-        text = text or ""
-        # Only the tail can ever be displayed on one line, so never hand the
-        # layout more than it could possibly use.
-        if len(text) > 220:
-            text = text[-220:]
-        self.view.caption = text
+    def setLive_(self, text):
+        """The phrase currently being recognised — shown dimmer."""
+        text = (text or "").strip()
+        v = self.view
+        live = v.rows[-1] if v.rows and not v.rows[-1].confirmed else None
+        if not text:
+            if live is not None:
+                live.leave()
+            return
+        if live is None:
+            v.rows.append(CaptionRow(text, confirmed=False))
+        else:
+            live.retext(text, confirmed=False)
+        v.setNeedsDisplay_(True)
+
+    def confirmPhrase_(self, text):
+        """Promote the live phrase to settled: it brightens, and the phrase
+        above it fades away upward."""
+        text = (text or "").strip()
+        if not text:
+            return
+        v = self.view
+        live = v.rows[-1] if v.rows and not v.rows[-1].confirmed else None
+        if live is not None:
+            live.retext(text, confirmed=True)
+        else:
+            v.rows.append(CaptionRow(text, confirmed=True))
+        # Keep at most MAX_ROWS on screen; retire anything older.
+        keep = [r for r in v.rows if r.state != "leave"]
+        for row in keep[:-MAX_ROWS]:
+            row.leave()
+        v.setNeedsDisplay_(True)
+
+    def clearCaptions_(self, _):
+        for row in self.view.rows:
+            row.leave()
         self.view.setNeedsDisplay_(True)
 
     def showIdle_(self, _):
@@ -577,12 +668,27 @@ def show_idle():
     _post("showIdle:")
 
 
-def set_caption(text):
-    """Show live transcription text in the HUD (call from any thread)."""
+def set_live(text):
+    """Words still being recognised (rendered dimmer). Any thread."""
     if _controller is None:
         return
     _controller.performSelectorOnMainThread_withObject_waitUntilDone_(
-        "setCaption:", text or "", False)
+        "setLive:", text or "", False)
+
+
+def confirm_phrase(text):
+    """A settled phrase: brightens, and pushes the older one out. Any thread."""
+    if _controller is None:
+        return
+    _controller.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "confirmPhrase:", text or "", False)
+
+
+def clear_captions():
+    if _controller is None:
+        return
+    _controller.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "clearCaptions:", None, False)
 
 
 def hide():

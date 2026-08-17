@@ -129,8 +129,9 @@ DEFAULT_CONFIG = {
         "locked": False,
         # Size of the waveform pill: 1.0 is the default, 0.8 small, 1.3 large.
         "scale": 1.0,
-        # Caption text size in points.
-        "font_size": 15,
+        # Caption text size in points. Subtitle scale: 18 small,
+        # 22 default, 28 for presenting.
+        "font_size": 22,
     },
     "sounds": True,
 }

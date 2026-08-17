@@ -211,27 +211,32 @@ def _new_words(shown, window):
     return window
 
 
-def _advance_caption(shown, text, budget):
-    """Grow the caption line, flipping to a fresh one when it's full.
+BREAKS = ".?!,;:—"
 
-    Captions are read, not scrolled: rather than sliding old words leftwards
-    out of view, fill a line and then start the next one with whatever is
-    being said now.
+
+def _segment(words, min_w=4, max_w=10):
+    """Split spoken words into short, readable phrases.
+
+    Captions are read in chunks, not word by word, so speech is grouped into
+    4-10 word phrases that end where the speaker naturally pauses. Returns
+    (finished_phrases, leftover) — the leftover is still being spoken.
     """
-    window = text.split()
-    if not window:
-        return " ".join(shown), shown
-    fresh = _new_words(shown, window)
-    if not fresh:
-        return " ".join(shown), shown
-    candidate = shown + fresh
-    if len(" ".join(candidate)) <= budget:
-        return " ".join(candidate), candidate
-    # Full: begin a new line with the current words only.
-    line = fresh
-    while len(" ".join(line)) > budget and len(line) > 1:
-        line = line[1:]
-    return " ".join(line), line
+    phrases, chunk = [], []
+    for word in words:
+        chunk.append(word)
+        ends_clause = word.rstrip()[-1:] in BREAKS
+        if len(chunk) >= min_w and ends_clause:
+            phrases.append(" ".join(chunk))
+            chunk = []
+        elif len(chunk) >= max_w:
+            # No natural break in range — cut at the last comma if there is
+            # one, so the split still lands somewhere sensible.
+            cut = max((i for i, x in enumerate(chunk[:-1])
+                       if x.rstrip()[-1:] in ",;:"), default=len(chunk) - 1)
+            phrases.append(" ".join(chunk[:cut + 1]))
+            chunk = chunk[cut + 1:]
+    return phrases, chunk
+
 
 
 class VoiceFlow:
@@ -277,10 +282,15 @@ class VoiceFlow:
         print(msg, flush=True)
 
     def hud_caption(self, text):
+        """Put a settled phrase on screen (used for the final transcript)."""
         if self._overlay is None:
             return
         try:
-            self._overlay.set_caption(text)
+            if text:
+                self._overlay.set_live("")
+                self._overlay.confirm_phrase(text)
+            else:
+                self._overlay.clear_captions()
         except Exception:
             pass
 
@@ -473,8 +483,8 @@ class VoiceFlow:
         far too slow to re-run every second. Preview text is never pasted — the
         final transcription always comes from the real model.
         """
-        last_shown = ""
         shown_words = []
+        pending = []
         last_pass = 0.0
         while True:
             p = self.conf.get("preview", {})
@@ -482,8 +492,8 @@ class VoiceFlow:
                 time.sleep(0.5)
                 continue
             if self.mode is None:
-                if last_shown or shown_words:
-                    last_shown, shown_words = "", []
+                if shown_words or pending:
+                    shown_words, pending = [], []
                 time.sleep(0.15)
                 continue
             # Hold a steady cadence: wait the remainder of the interval, not a
@@ -528,11 +538,14 @@ class VoiceFlow:
                     continue
                 if not text:
                     continue
-                line, shown_words = _advance_caption(
-                    shown_words, text, self._overlay.caption_budget())
-                if line != last_shown:
-                    last_shown = line
-                    self._overlay.set_caption(line)
+                fresh = _new_words(shown_words, text.split())
+                if fresh:
+                    shown_words = shown_words + fresh
+                    pending = pending + fresh
+                    phrases, pending = _segment(pending)
+                    for phrase in phrases:
+                        self._overlay.confirm_phrase(phrase)
+                    self._overlay.set_live(" ".join(pending))
             except Exception as e:
                 self.log(f"[preview] {e}")
                 time.sleep(1.0)

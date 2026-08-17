@@ -372,7 +372,7 @@ class SettingsController(NSObject):
         sc = float(ovl.get("scale", 1.0))
         self.size_popup.selectItemAtIndex_(0 if sc < 0.95 else (2 if sc > 1.1 else 1))
         fs = int(ovl.get("font_size", 15))
-        self.text_popup.selectItemAtIndex_(0 if fs < 14 else (2 if fs > 16 else 1))
+        self.text_popup.selectItemAtIndex_(0 if fs < 20 else (2 if fs > 24 else 1))
         self._sync_caption_controls(on)
         self._refreshKeyStatus()
         self._loadModelsAsync()
@@ -514,7 +514,7 @@ class SettingsController(NSObject):
         ovl = conf.setdefault("overlay", {})
         ovl["enabled"] = bool(self.overlay_box.state())
         ovl["scale"] = (0.8, 1.0, 1.3)[self.size_popup.indexOfSelectedItem()]
-        ovl["font_size"] = (13, 15, 18)[self.text_popup.indexOfSelectedItem()]
+        ovl["font_size"] = (18, 22, 28)[self.text_popup.indexOfSelectedItem()]
         pv = conf.setdefault("preview", {})
         pv["enabled"] = bool(self.caption_box.state())
         pv["model"] = ("tiny", "base")[self.caption_popup.indexOfSelectedItem()]
