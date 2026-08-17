@@ -50,12 +50,17 @@ class Recorder:
 
     def snapshot(self):
         """Audio captured so far in the current take, without ending it.
-        Used for live preview transcription while the user is still talking."""
+        Used for live preview transcription while the user is still talking.
+
+        The concatenate happens *outside* the lock. Joining a long take can
+        take milliseconds, and the mic callback needs the same lock to store
+        the next buffer — holding it that long drops incoming audio.
+        """
         with self._lock:
             if not self._capturing or not self._chunks:
                 return None
-            audio = np.concatenate(self._chunks, axis=0)
-        return audio.flatten()
+            chunks = list(self._chunks)      # cheap: references, not data
+        return np.concatenate(chunks, axis=0).flatten()
 
     def levels(self):
         """Recent loudness history, oldest first, each 0..1."""

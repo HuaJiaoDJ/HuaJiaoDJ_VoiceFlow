@@ -476,54 +476,64 @@ class VoiceFlow:
     # ---------- live caption preview ----------
 
     def _preview_loop(self):
-        """While a take is running, transcribe what's been said so far with a
-        small fast model and show it in the overlay.
+        """Live captions: transcribe only the speech not yet committed.
 
-        This is deliberately a *second* model: the accurate one is busy-ish and
-        far too slow to re-run every second. Preview text is never pasted — the
-        final transcription always comes from the real model.
+        Committing by *audio position* rather than by diffing text is the
+        whole trick. Whisper rewords earlier parts of a window between passes,
+        so text-diffing repeatedly failed to recognise words it had already
+        shown and re-displayed them — captions flashed and repeated, worst of
+        all when speaking quickly. Once a phrase is committed its audio is
+        never looked at again, so it cannot come back.
         """
-        shown_words = []
-        pending = []
+        committed = 0          # samples of this take already turned into phrases
+        last_phrase = ""
+        last_live = ""
         last_pass = 0.0
+        seen_seq = -1
         while True:
             p = self.conf.get("preview", {})
             if not p.get("enabled", True) or self._overlay is None:
                 time.sleep(0.5)
                 continue
             if self.mode is None:
-                if shown_words or pending:
-                    shown_words, pending = [], []
+                committed, last_phrase, last_live = 0, "", ""
                 time.sleep(0.15)
                 continue
-            # Hold a steady cadence: wait the remainder of the interval, not a
-            # full interval *on top of* however long the last pass took. Without
-            # this the gap between updates grew with the pass time and the
-            # caption looked frozen while you kept talking.
-            wait = float(p.get("interval", 1.0)) - last_pass
-            time.sleep(max(0.05, wait))
+            # Steady cadence: wait the remainder of the interval, not a full
+            # interval on top of however long the last pass took.
+            time.sleep(max(0.05, float(p.get("interval", 1.0)) - last_pass))
             if self.mode is None:
                 continue
             pass_started = time.time()
             try:
-                # Tie this pass to the current take. A preview takes ~0.35s to
-                # run; without this, a result from the take that just ended
-                # could land on screen during the next one.
                 seq = self._take_seq
+                if seq != seen_seq:            # new take: start from its beginning
+                    seen_seq, committed = seq, 0
+                    last_phrase = last_live = ""
                 audio = self.recorder.snapshot()
                 rate = self.conf["audio"]["sample_rate"]
-                min_len = float(p.get("min_audio", 0.6)) * rate
-                if audio is None or len(audio) < min_len:
+                if audio is None:
                     continue
-                # Only transcribe the tail. On continuous speech a full-take
-                # pass grows from 0.8s at 5s to 1.7s at 32s, so updates crawl
-                # the longer you talk. A fixed window keeps every pass cheap,
-                # and the caption only shows the most recent line anyway.
-                window = int(float(p.get("window_seconds", 10.0)) * rate)
-                if len(audio) > window:
-                    audio = audio[-window:]
-                # Whisper invents phrases ("Thank you.", "you") when handed
-                # near-silence. Don't ask it about audio with no speech in it.
+                # Feed the model a little already-committed audio as context.
+                # Handed a bare 1-2s fragment it mishears badly ("the biggest
+                # challenges not speaking best"); with a lead-in it recovers.
+                # The lead-in is transcribed but never displayed.
+                lead = int(float(p.get("lead_in", 2.0)) * rate)
+                start = max(0, committed - lead)
+                lead_secs = (committed - start) / float(rate)
+                audio = audio[start:]
+                if len(audio) - (committed - start) < float(p.get("min_audio", 0.6)) * rate:
+                    continue
+                # Bound the work: if someone talks for a long stretch without
+                # a natural break, commit the oldest part anyway.
+                cap = int(float(p.get("window_seconds", 10.0)) * rate)
+                if len(audio) > cap:
+                    drop = len(audio) - cap
+                    start += drop
+                    committed = max(committed, start)
+                    lead_secs = max(0.0, (committed - start) / float(rate))
+                    audio = audio[-cap:]
+                # Whisper invents phrases ("Thank you.") from near-silence.
                 import numpy as _np
                 if float(_np.abs(audio).max()) < 0.012:
                     continue
@@ -531,21 +541,33 @@ class VoiceFlow:
                 if tr is None:
                     time.sleep(1.0)
                     continue
-                text = tr.transcribe(audio)
-                # Discard anything that finished after its take ended, or that
-                # belongs to a previous take.
+                words = tr.transcribe_words(audio)
                 if seq != self._take_seq or self.mode is None:
                     continue
-                if not text:
+                if not words:
                     continue
-                fresh = _new_words(shown_words, text.split())
-                if fresh:
-                    shown_words = shown_words + fresh
-                    pending = pending + fresh
-                    phrases, pending = _segment(pending)
+
+                # Drop the lead-in: those words are already on screen.
+                words = [(t, e) for t, e in words if e > lead_secs + 0.02]
+                if not words:
+                    continue
+                texts = [w for w, _ in words]
+                phrases, leftover = _segment(texts)
+                if phrases:
+                    # Advance past exactly the audio those phrases covered, so
+                    # the next pass starts after them.
+                    spoken = len(texts) - len(leftover)
+                    committed = start + int(words[spoken - 1][1] * rate)
                     for phrase in phrases:
-                        self._overlay.confirm_phrase(phrase)
-                    self._overlay.set_live(" ".join(pending))
+                        if phrase != last_phrase:
+                            last_phrase = phrase
+                            self._overlay.confirm_phrase(phrase)
+                    last_live = ""
+                    self._overlay.set_live("")
+                live = " ".join(leftover)
+                if live != last_live:
+                    last_live = live
+                    self._overlay.set_live(live)
             except Exception as e:
                 self.log(f"[preview] {e}")
                 time.sleep(1.0)

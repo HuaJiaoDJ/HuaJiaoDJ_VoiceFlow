@@ -109,6 +109,10 @@ DEFAULT_CONFIG = {
         "interval": 0.7,
         # Don't bother previewing until there's this much audio.
         "min_audio": 0.6,
+        # Seconds of already-shown audio replayed to the model purely as
+        # context. Short fragments transcribe badly on their own; these words
+        # are recognised but not displayed again.
+        "lead_in": 2.0,
         # Only the last N seconds are re-transcribed each pass, so the caption
         # tracks what you're saying *now* rather than replaying the whole take.
         # Measured on fast continuous speech: a 4s window yields ~62 characters
