@@ -63,10 +63,10 @@ MAX_ROWS = 1                # one line at a time; a full line pages over
 
 # Transition timings, from the caption spec.
 ENTER_SECS, LEAVE_SECS = 0.22, 0.30
-# Per-character reveal, measured off the reference clip frame by frame at
-# 30fps: each letter takes ~3-4 frames, neighbours are ~1 frame apart, and
-# they rise into place from below rather than simply fading.
-CHAR_FADE, CHAR_STAGGER, CHAR_RISE = 0.13, 0.035, 5.0
+# New words ease in softly. No per-letter stagger and no rise: those read as
+# flashy once the caption stopped redrawing itself, and the point is simply
+# to show what came next.
+CHAR_FADE, CHAR_STAGGER, CHAR_RISE = 0.30, 0.0, 0.0
 ENTER_DY, LEAVE_DY = 6.0, -4.0
 LIVE_ALPHA = CONFIRMED_ALPHA = 1.0
 

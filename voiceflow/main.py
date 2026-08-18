@@ -486,6 +486,7 @@ class VoiceFlow:
         rather than being replayed.
         """
         last_shown = ""
+        shown_words = []    # everything already put on screen this take
         last_pass = 0.0
         seen_seq = -1
         while True:
@@ -507,7 +508,7 @@ class VoiceFlow:
             try:
                 seq = self._take_seq
                 if seq != seen_seq:
-                    seen_seq, last_shown = seq, ""
+                    seen_seq, last_shown, shown_words = seq, "", []
                     self._overlay.clear_captions()
                 audio = self.recorder.snapshot()
                 rate = self.conf["audio"]["sample_rate"]
@@ -536,22 +537,19 @@ class VoiceFlow:
                     continue
                 if not text:
                     continue
-                # Keep the newest words. Only one line is ever shown, so hand
-                # the overlay the tail rather than the whole window.
-                # Keep enough for the rows the overlay can show, so a fast
-                # talker's sentence wraps onto a second line instead of being
-                # chopped at a fixed character count.
-                # Allow a few lines' worth through: the overlay shows only the
-                # newest line and pages over as each one fills, so the text
-                # needs room to cross a line boundary.
-                budget = self._overlay.caption_budget() * 3
-                words = text.split()
-                while len(" ".join(words)) > budget and len(words) > 3:
-                    words = words[1:]
-                text = " ".join(words)
-                if text != last_shown:
-                    last_shown = text
-                    self._overlay.set_live(text)
+                # Only ever move forward. The window is re-transcribed each
+                # pass and overlaps the last one, so showing its whole tail
+                # meant already-read words were redrawn — and re-animated —
+                # again and again. Take just the genuinely new words and
+                # append them; nothing already on screen is touched.
+                fresh = _new_words(shown_words, text.split())
+                if not fresh:
+                    continue
+                shown_words.extend(fresh)
+                line = " ".join(shown_words)
+                if line != last_shown:
+                    last_shown = line
+                    self._overlay.set_live(line)
             except Exception as e:
                 self.log(f"[preview] {e}")
                 time.sleep(1.0)
