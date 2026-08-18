@@ -19,6 +19,7 @@ from AppKit import (
     NSFontAttributeName,
     NSForegroundColorAttributeName,
     NSGraphicsContext,
+    NSBaselineOffsetAttributeName,
     NSMutableParagraphStyle,
     NSPanel,
     NSParagraphStyleAttributeName,
@@ -62,9 +63,10 @@ MAX_ROWS = 1                # one line at a time; a full line pages over
 
 # Transition timings, from the caption spec.
 ENTER_SECS, LEAVE_SECS = 0.22, 0.30
-# Per-character reveal, matching the reference clip: each letter fades up
-# quickly, with a small stagger so a burst of new words types itself in.
-CHAR_FADE, CHAR_STAGGER = 0.16, 0.022
+# Per-character reveal, measured off the reference clip frame by frame at
+# 30fps: each letter takes ~3-4 frames, neighbours are ~1 frame apart, and
+# they rise into place from below rather than simply fading.
+CHAR_FADE, CHAR_STAGGER, CHAR_RISE = 0.13, 0.035, 5.0
 ENTER_DY, LEAVE_DY = 6.0, -4.0
 LIVE_ALPHA = CONFIRMED_ALPHA = 1.0
 
@@ -173,12 +175,13 @@ class CaptionRow:
             self.text, self.ns, self.width = text, None, None
         self.confirmed = confirmed
 
-    def char_alphas(self, now):
-        """0..1 opacity per character, so the tail fades in as it arrives."""
+    def char_progress(self, now):
+        """0..1 per character, eased. Drives opacity and the rise together."""
         out = []
         for start in self.starts:
             k = (now - start) / CHAR_FADE
-            out.append(0.0 if k <= 0.0 else (1.0 if k >= 1.0 else k))
+            k = 0.0 if k <= 0.0 else (1.0 if k >= 1.0 else k)
+            out.append(1.0 - (1.0 - k) ** 3)      # ease-out
         return out
 
     def leave(self):
@@ -312,14 +315,15 @@ class WaveView(NSView):
         attrs = self._row_attrs(colour)
         rect = NSMakeRect(bx + PAD_X, by + PAD_Y, tw, self.m["line_h"])
         text = row.text
-        alphas = row.char_alphas(time.time())
-        if all(v >= 1.0 for v in alphas):
+        prog = row.char_progress(time.time())
+        if all(v >= 1.0 for v in prog):
             row.ns.drawInRect_withAttributes_(rect, attrs)
             return
-        # Tail still arriving: fade those characters in individually.
+        # Tail still arriving: each unsettled character gets its own opacity
+        # and baseline offset, so it fades up into line instead of appearing.
         rich = NSMutableAttributedString.alloc().initWithString_attributes_(
             text, attrs)
-        for i, v in enumerate(alphas[:len(text)]):
+        for i, v in enumerate(prog[:len(text)]):
             if v >= 1.0:
                 continue
             rich.addAttribute_value_range_(
@@ -327,6 +331,8 @@ class WaveView(NSView):
                 NSColor.colorWithCalibratedRed_green_blue_alpha_(
                     0.98, 0.98, 1.0, a * v),
                 (i, 1))
+            rich.addAttribute_value_range_(
+                NSBaselineOffsetAttributeName, -CHAR_RISE * (1.0 - v), (i, 1))
         rich.drawInRect_(rect)
 
     @objc.python_method
