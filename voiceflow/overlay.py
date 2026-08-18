@@ -20,8 +20,6 @@ from AppKit import (
     NSForegroundColorAttributeName,
     NSGraphicsContext,
     NSMutableParagraphStyle,
-    NSShadow,
-    NSShadowAttributeName,
     NSPanel,
     NSParagraphStyleAttributeName,
     NSRectFillUsingOperation,
@@ -84,8 +82,7 @@ def metrics(scale=1.0, font_size=BASE_FONT):
     line_h = _m.ceil((f.ascender() - f.descender() + f.leading()) * LINE_SPACING)
     pill_w, pill_h = BASE_PILL_W * scale, BASE_PILL_H * scale
     row_h = line_h + PAD_Y * 2
-    # Extra headroom for the text shadow, which extends past the glyphs.
-    caption_h = row_h * MAX_ROWS + ROW_GAP + 22.0
+    caption_h = row_h * MAX_ROWS + ROW_GAP + 12.0
     panel_w = max(560.0, pill_w * 3.4)
     sample = "the quick brown fox jumps over the lazy dog and keeps on going"
     px = _S.stringWithString_(sample).sizeWithAttributes_({_FA: f}).width
@@ -288,11 +285,13 @@ class WaveView(NSView):
 
     @objc.python_method
     def _draw_row(self, row, w, baseline_y):
-        """One caption row: bare text, revealed character by character.
+        """One caption row: rounded plate, then text revealed character by
+        character.
 
-        No background plate — the reference is plain type on the desktop. A
-        soft shadow carries legibility over light windows instead, which keeps
-        the words the only thing on screen.
+        The plate stays. Bare white type matched the reference clip, but that
+        clip is captioning black video — over a white document the words all
+        but vanished. The reveal is what makes the delivery feel right; the
+        plate is what makes it readable on any background.
         """
         if not row.text or row.alpha <= 0.01:
             return
@@ -300,27 +299,24 @@ class WaveView(NSView):
         if a <= 0.01:
             return
         tw = min(self._row_width(row), w - 80.0)
-        bx = (w - tw) / 2.0
+        plate_w, plate_h = tw + PAD_X * 2, self.m["line_h"] + PAD_Y * 2
+        bx = (w - plate_w) / 2.0
         by = baseline_y + row.dy
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.05, 0.06, 0.11, PLATE_ALPHA * a).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(bx, by, plate_w, plate_h), CORNER, CORNER).fill()
 
-        base = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.99, 0.99, 1.0, a)
-        attrs = self._row_attrs(base)
-        attrs = dict(attrs)
-        shadow = NSShadow.alloc().init()
-        shadow.setShadowColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0, 0, 0, 0.85 * a))
-        shadow.setShadowBlurRadius_(5.0)
-        shadow.setShadowOffset_((0, -1))
-        attrs[NSShadowAttributeName] = shadow
-
+        colour = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.98, 0.98, 1.0, a)
+        attrs = self._row_attrs(colour)
+        rect = NSMakeRect(bx + PAD_X, by + PAD_Y, tw, self.m["line_h"])
         text = row.text
-        rect = NSMakeRect(bx, by + PAD_Y, tw, self.m["line_h"])
         alphas = row.char_alphas(time.time())
         if all(v >= 1.0 for v in alphas):
-            NSString.stringWithString_(text).drawInRect_withAttributes_(rect, attrs)
+            row.ns.drawInRect_withAttributes_(rect, attrs)
             return
-        # Some of the tail is still fading: colour those characters
-        # individually so the phrase types itself in.
+        # Tail still arriving: fade those characters in individually.
         rich = NSMutableAttributedString.alloc().initWithString_attributes_(
             text, attrs)
         for i, v in enumerate(alphas[:len(text)]):
@@ -329,7 +325,7 @@ class WaveView(NSView):
             rich.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
                 NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                    0.99, 0.99, 1.0, a * v),
+                    0.98, 0.98, 1.0, a * v),
                 (i, 1))
         rich.drawInRect_(rect)
 

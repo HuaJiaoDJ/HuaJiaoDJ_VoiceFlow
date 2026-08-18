@@ -265,6 +265,9 @@ class VoiceFlow:
         self.auto_key = None
         self._menubar = None
         self._auto_held = False
+        self._last_paste_at = 0.0   # for spacing back-to-back dictations
+        self._last_paste_app = None
+        self._last_paste_end = ""
         self._take_seq = 0          # bumped per take; stale previews are dropped
         self._preview_tr = None     # fast model for live captions
         self._preview_loading = False
@@ -691,6 +694,32 @@ class VoiceFlow:
                 self.mode = None
                 self._release_busy()
 
+    def _separate_from_previous(self, text, mode):
+        """Put a space between back-to-back dictations.
+
+        Each take pastes at the cursor with nothing between it and the last
+        one, so consecutive dictations — and every utterance in hands-free
+        mode — ran straight together ("...going onI would love to..."). Only
+        applies when the previous paste was recent and in the same app, so a
+        fresh cursor position never picks up a stray leading space.
+        """
+        if mode == "command" or not text:
+            return text
+        recent = time.time() - self._last_paste_at < 45.0
+        same_app = self.target_app and self.target_app == self._last_paste_app
+        self._last_paste_at, self._last_paste_app = time.time(), self.target_app
+        if not (recent and same_app):
+            return text
+        if text[0].isspace() or text[0] in ",.;:!?)]}'\"":
+            return text
+        # CJK text runs together normally — no space needed there.
+        if ord(text[0]) > 0x2E80:
+            return text
+        if self._last_paste_end and (self._last_paste_end.isspace()
+                                     or self._last_paste_end in "\n\t"):
+            return text
+        return " " + text
+
     def _release_busy(self):
         if self.busy.locked():
             try:
@@ -809,6 +838,7 @@ class VoiceFlow:
             if final is None:
                 self.sound(SOUND_ERROR)
                 return
+            final = self._separate_from_previous(final, mode)
             with self._inject_guard():
                 paste_text(
                     final,
@@ -817,6 +847,7 @@ class VoiceFlow:
                     then_enter=do_enter,
                 )
             self.sound(SOUND_DONE)
+            self._last_paste_end = final[-1:] if not do_enter else "\n"
             self.log(f"[pasted] {final!r}" + (" +enter" if do_enter else ""))
         finally:
             self.hud("show_idle" if self.auto_on else "hide")
