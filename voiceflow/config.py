@@ -107,8 +107,13 @@ DEFAULT_CONFIG = {
         # Seconds between preview passes; the wait is the remainder after
         # the last pass, so this is the cadence, not an added delay.
         "interval": 0.7,
-        # Don't bother previewing until there's this much audio.
-        "min_audio": 0.6,
+        # Don't preview until there is enough audio to identify the language.
+        # Whisper guesses it from the opening moments; on a very short clip it
+        # guessed wrong and captioned Chinese speech in Russian.
+        "min_audio": 1.2,
+        # Leave the newest moment uncommitted — words at the edge of the
+        # window are the ones the model is still revising.
+        "stability": 0.35,
         # How much recent speech is re-transcribed each pass. 6s gives the
         # model enough context to read a phrase correctly while keeping a pass
         # under ~0.8s, so the line stays close to what is being said now.

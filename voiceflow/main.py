@@ -185,6 +185,21 @@ def hotkey_satisfied(spec, down):
     return True
 
 
+def _join_words(words):
+    """Join word tokens for display.
+
+    Whisper returns words individually; English needs spaces between them,
+    CJK does not and looks wrong with them.
+    """
+    out = ""
+    for w in words:
+        if out and w[:1].isalnum() and ord(w[0]) < 0x2E80 and out[-1].isalnum():
+            out += " " + w
+        else:
+            out += w
+    return out
+
+
 def _norm(word):
     return "".join(c for c in word.lower() if c.isalnum())
 
@@ -479,14 +494,21 @@ class VoiceFlow:
     # ---------- live caption preview ----------
 
     def _preview_loop(self):
-        """Live captions: a rolling line of the most recent speech.
+        """Live captions, committed by position in the audio.
 
-        Each pass re-transcribes a short sliding window and shows the tail, so
-        the caption tracks what is being said *now*. Older words scroll off
-        rather than being replayed.
+        Each pass re-transcribes an overlapping window, and the model rewords
+        earlier parts between passes. Diffing the text does not survive that:
+        the anchor stops matching and whole phrases get shown twice. It fails
+        outright for Chinese, where a pass is one token with no spaces to
+        split on, so every pass looked entirely new.
+
+        Word timestamps sidestep all of it. Each word is committed by *when it
+        was spoken*, so a reworded pass cannot replay speech already on screen
+        regardless of language.
         """
+        shown = []              # word strings already on screen this take
+        committed_until = 0.0   # seconds of audio already read out
         last_shown = ""
-        shown_words = []    # everything already put on screen this take
         last_pass = 0.0
         seen_seq = -1
         while True:
@@ -499,8 +521,6 @@ class VoiceFlow:
                     last_shown = ""
                 time.sleep(0.15)
                 continue
-            # Steady cadence: wait the remainder of the interval, not a full
-            # interval on top of however long the last pass took.
             time.sleep(max(0.05, float(p.get("interval", 0.7)) - last_pass))
             if self.mode is None:
                 continue
@@ -508,45 +528,50 @@ class VoiceFlow:
             try:
                 seq = self._take_seq
                 if seq != seen_seq:
-                    seen_seq, last_shown, shown_words = seq, "", []
+                    seen_seq, last_shown = seq, ""
+                    shown, committed_until = [], 0.0
                     self._overlay.clear_captions()
+
                 audio = self.recorder.snapshot()
                 rate = self.conf["audio"]["sample_rate"]
-                if audio is None or len(audio) < float(p.get("min_audio", 0.6)) * rate:
+                # Enough audio to identify the language. Whisper guesses from
+                # the opening moments and, on a very short clip, guesses wrong
+                # — the caption came up in Russian for Chinese speech.
+                if audio is None or len(audio) < float(p.get("min_audio", 1.2)) * rate:
                     continue
-                # Re-transcribe a sliding window of the most recent speech.
-                # Stitching committed phrases was tried and was worse: the
-                # model rewords across pass boundaries, so fragments duplicated
-                # ("keep up." then "up with me") and short pieces transcribed
-                # badly. A fresh window is coherent, and — because the whole
-                # window is redone each pass — earlier mistakes self-correct as
-                # more context arrives, instead of being frozen on screen.
-                window = int(float(p.get("window_seconds", 6.0)) * rate)
-                if len(audio) > window:
-                    audio = audio[-window:]
-                # Whisper invents phrases ("Thank you.") from near-silence.
+                total = len(audio) / rate
+
+                window_n = int(float(p.get("window_seconds", 6.0)) * rate)
+                clip = audio[-window_n:] if len(audio) > window_n else audio
+                clip_start = (len(audio) - len(clip)) / rate
+
                 import numpy as _np
-                if float(_np.abs(audio).max()) < 0.012:
+                if float(_np.abs(clip).max()) < 0.012:
                     continue
                 tr = self._preview_transcriber()
                 if tr is None:
                     time.sleep(1.0)
                     continue
-                text = tr.transcribe(audio)
-                if seq != self._take_seq or self.mode is None:
+
+                words = tr.transcribe_words(clip)
+                if seq != self._take_seq or self.mode is None or not words:
                     continue
-                if not text:
-                    continue
-                # Only ever move forward. The window is re-transcribed each
-                # pass and overlaps the last one, so showing its whole tail
-                # meant already-read words were redrawn — and re-animated —
-                # again and again. Take just the genuinely new words and
-                # append them; nothing already on screen is touched.
-                fresh = _new_words(shown_words, text.split())
+
+                # Leave the newest moment uncommitted: words at the very edge
+                # of the window are the ones the model is still revising.
+                settled = total - float(p.get("stability", 0.35))
+                fresh, newest = [], committed_until
+                for word, end_rel in words:
+                    end = clip_start + end_rel
+                    if end <= committed_until or end > settled:
+                        continue
+                    fresh.append(word)
+                    newest = max(newest, end)
                 if not fresh:
                     continue
-                shown_words.extend(fresh)
-                line = " ".join(shown_words)
+                committed_until = newest
+                shown.extend(fresh)
+                line = _join_words(shown)
                 if line != last_shown:
                     last_shown = line
                     self._overlay.set_live(line)
